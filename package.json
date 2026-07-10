@@ -25,6 +25,7 @@
     "node-canvas-webgl": "^0.3.0",
     "open": "^10.2.0",
     "openai": "^4.4.0",
+    "patch-package": "^8.0.0",
     "prismarine-item": "^1.15.0",
     "prismarine-viewer": "^1.32.0",
     "replicate": "^0.29.4",
@@ -41,13 +42,13 @@
   },
   "scripts": {
     "postinstall": "patch-package",
-    "start": "node main.js"
+    "start": "node main.js",
+    "test": "node --test \"test/*.test.js\"",
+    "lint": "eslint src main.js settings.js"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",
     "eslint": "^9.13.0",
-    "eslint-plugin-no-floating-promise": "^2.0.0",
-    "globals": "^15.11.0",
-    "patch-package": "^8.0.0"
+    "globals": "^15.11.0"
   }
 }

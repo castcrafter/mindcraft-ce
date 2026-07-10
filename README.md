@@ -51,6 +51,10 @@ Mindcraft CE is the experimental fork of Mindcraft, featuring cutting-edge capab
 > [!Warning]
 > The `use_function_calling` feature is experimental and may cause unexpected behavior. 
 
+## Persistent Agent System
+
+This branch contains a restart-safe planner/task system with persistent goals, task checkpoints, recent memory, throttled in-game progress messages, and DeepSeek thinking/tool-call support. See [AGENT_SYSTEM.md](AGENT_SYSTEM.md) for setup, commands, Pterodactyl configuration, and recovery behavior. The implementation audit and remaining limitations are documented in [docs/agent-system-audit.md](docs/agent-system-audit.md).
+
 ### 🚧 **Coming Soon**
 - **Model Provider Repositories** — Install and update model providers from external repositories via `model_provider_repositories` in `settings.js`
 - **Tools Repositories** — Extend bot capabilities with community-created tools via `tools_provider_repositories` in `settings.js`

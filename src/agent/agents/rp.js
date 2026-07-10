@@ -9,16 +9,17 @@ const MAX_MEMORY_PER_PLAYER = 20;
 export class RPAgent {
     constructor(agent) {
         this.agent = agent;
-        this.playerMemories = {};
-        this.playerNotes = {};
+        const saved = agent.stateStore?.snapshot?.().rp || {};
+        this.playerMemories = saved.player_memories || {};
+        this.playerNotes = saved.player_notes || {};
     }
 
     async respond(source, message, brainContext) {
         const memory = this._getPlayerMemory(source);
 
         let userContent = `${source}: ${message}`;
-        if (brainContext?.thoughts)
-            userContent += `\n\n[Brain's analysis]: ${brainContext.thoughts}`;
+        if (brainContext?.progress_update)
+            userContent += `\n\n[Planner's public summary]: ${brainContext.progress_update}`;
         memory.push({ role: 'user', content: userContent });
 
         const notes = this.playerNotes[source];
@@ -33,6 +34,7 @@ export class RPAgent {
         }
 
         let response;
+        const stopThinking = this.agent.progress?.startThinking?.(`a reply to ${source}`) || (() => {});
         try {
             [response] = await this.agent.prompter.handleRequest(
                 'rp', messagesForLLM, [], rpAgentResponseFormat
@@ -40,6 +42,8 @@ export class RPAgent {
         } catch (error) {
             log.error('LLM request failed:', error);
             return null;
+        } finally {
+            stopThinking();
         }
 
         if (!response) return null;
@@ -51,6 +55,7 @@ export class RPAgent {
             log.warn('Failed to parse response as JSON:', response);
             memory.push({ role: 'assistant', content: response });
             this._trimMemory(source);
+            this._persist();
             return response;
         }
 
@@ -61,6 +66,9 @@ export class RPAgent {
             this._updateNotes(source, parsed.internal_notes);
         if (parsed.relationship_updates)
             this._updateNotes(source, parsed.relationship_updates);
+
+        this._persist();
+        this.agent.stateStore?.remember('conversation', `${this.agent.name} to ${source}: ${parsed.chat_response || ''}`);
 
         log.info(`Response to ${source}: ${parsed.chat_response}`);
         if (parsed.internal_notes)
@@ -88,5 +96,9 @@ export class RPAgent {
         this.playerNotes[source] = combined.length > 500
             ? '...' + combined.slice(-497)
             : combined;
+    }
+
+    _persist() {
+        this.agent.stateStore?.saveRP(this.playerMemories, this.playerNotes);
     }
 }

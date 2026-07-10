@@ -40,6 +40,7 @@ export class Mistral {
     async sendRequest(turns, systemMessage, tools = [], responseFormat = responseFormatSchema) {
 
         let result;
+        let function_calls = [];
 
         try {
             const model = this.model_name || "mistral-large-latest";
@@ -53,14 +54,15 @@ export class Mistral {
             const response  = await this.#client.chat.complete({
                 model,
                 messages,
+                tools,
                 responseFormat: responseFormat,
                 ...(this.params || {})
             });
 
             result = response.choices[0].message.content;
-            let function_calls = [];
             for (const tool_call of response.choices[0].message.tool_calls || []) {
                 function_calls.push({
+                    id: tool_call.id,
                     name: tool_call.function.name,
                     arguments: tool_call.function.arguments
                 });

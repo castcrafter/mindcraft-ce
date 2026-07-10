@@ -25,6 +25,7 @@ export class SkillLibrary {
             } catch (error) {
                 console.warn('Error with embedding model, using word-overlap instead.');
                 this.embedding_model = null;
+                this.skill_docs_embeddings = {};
             }
         }
         this.always_show_skills_docs = {};
@@ -43,17 +44,17 @@ export class SkillLibrary {
         let skill_doc_similarities = [];
 
         if (select_num === -1) {
-            skill_doc_similarities = Object.keys(this.skill_docs_embeddings)
+            skill_doc_similarities = (this.skill_docs || [])
             .map(doc_key => ({
                 doc_key,
                 similarity_score: 0
             }));
         }
         else if (!this.embedding_model) {
-            skill_doc_similarities = Object.keys(this.skill_docs_embeddings)
+            skill_doc_similarities = (this.skill_docs || [])
                 .map(doc_key => ({
                     doc_key,
-                    similarity_score: wordOverlapScore(message, this.skill_docs_embeddings[doc_key])
+                    similarity_score: wordOverlapScore(message, doc_key)
                 }))
                 .sort((a, b) => b.similarity_score - a.similarity_score);
         }

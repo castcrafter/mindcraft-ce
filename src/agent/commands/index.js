@@ -2,15 +2,36 @@ import { tools } from './actions.js';
 
 const toolMap = {};
 const toolList = [];
+let initialized = false;
+let initializationPromise = null;
 
-initializeTools();
+initializeTools().catch(error => {
+    console.error('Initial tool discovery failed:', error);
+});
 
-export async function initializeTools() {
-    const loadedTools = await tools();
-    for (const tool of Object.values(loadedTools)) {
-        toolMap[tool.name] = tool;
+export function initializeTools() {
+    if (initialized)
+        return Promise.resolve();
+    if (initializationPromise)
+        return initializationPromise;
+    initializationPromise = (async () => {
+        const loadedTools = await tools();
+        for (const tool of Object.values(loadedTools))
+            registerTool(tool);
+        initialized = true;
+    })();
+    return initializationPromise;
+}
+
+export function registerTool(tool) {
+    if (!tool?.name)
+        throw new Error('Cannot register a tool without a name.');
+    toolMap[tool.name] = tool;
+    const existingIndex = toolList.findIndex(item => item.name === tool.name);
+    if (existingIndex >= 0)
+        toolList[existingIndex] = tool;
+    else
         toolList.push(tool);
-    }
 }
 
 export function getTool(name) {
@@ -20,8 +41,8 @@ export function getTool(name) {
     return toolMap[name];
 }
 
-export function getToolDefinitions() {
-    return toolList.map(tool => {
+export function getToolDefinitions(agent = null) {
+    return toolList.filter(tool => !isBlockedForAgent(agent, tool.name)).map(tool => {
         return convertToolToSchema(tool);
     });
 }
@@ -97,6 +118,8 @@ export async function executeTool(agent, name, args) {
         console.error("tool list is:", toolList);
         throw new Error(`Tool ${name} not found`);
     }
+    if (isBlockedForAgent(agent, name))
+        throw new Error(`Tool ${name} is blocked for this agent`);
     
     // if the args is a array, map them to positional arguments
     if (Array.isArray(args)) {
@@ -125,7 +148,8 @@ function mapArgs(params, argsObj) {
 
 export function blacklistTools(toolNames) {
     const unblockable = ['stop', 'stats', 'inventory', 'goal'];
-    for (const name of toolNames) {
+    for (const configuredName of toolNames) {
+        const name = configuredName.startsWith('!') ? configuredName.slice(1) : configuredName;
         if (unblockable.includes(name)) {
             console.warn(`Tool ${name} is unblockable`);
             continue;
@@ -139,12 +163,63 @@ export function blacklistTools(toolNames) {
 }
 
 export function containsToolCall(message) {
-    for (const toolName of Object.keys(toolMap)) {
-        if (message.includes(`!${toolName}`)) {
-            return toolName;
+    return parseToolCall(message)?.name || null;
+}
+
+function isBlockedForAgent(agent, name) {
+    if (!agent?.blocked_actions)
+        return false;
+    const unblockable = ['stop', 'stats', 'inventory'];
+    if (unblockable.includes(name))
+        return false;
+    return agent.blocked_actions.some(configuredName =>
+        (configuredName.startsWith('!') ? configuredName.slice(1) : configuredName) === name
+    );
+}
+
+export function parseToolCall(message) {
+    return parseToolCalls(message)[0] || null;
+}
+
+export function parseToolCalls(message) {
+    const text = String(message || '');
+    const matches = text.matchAll(/!([A-Za-z][A-Za-z0-9_-]*)(?:\((.*?)\))?/gs);
+    const calls = [];
+
+    for (const match of matches) {
+        const name = resolveToolName(match[1]);
+        if (!name)
+            continue;
+
+        calls.push({
+            name,
+            arguments: parseInlineArguments(match[2])
+        });
+    }
+    return calls;
+}
+
+function resolveToolName(candidate) {
+    if (toolMap[candidate])
+        return candidate;
+    const normalized = candidate.replace(/[-_]/g, '').toLowerCase();
+    return Object.keys(toolMap).find(name =>
+        name.replace(/[-_]/g, '').toLowerCase() === normalized
+    ) || null;
+}
+
+function parseInlineArguments(argumentText) {
+    let args = [];
+    if (argumentText?.trim()) {
+        try {
+            args = JSON.parse(`[${argumentText}]`);
+        } catch {
+            args = argumentText.split(',').map(value =>
+                value.trim().replace(/^['"]|['"]$/g, '')
+            );
         }
     }
-    return null; 
+    return args;
 }
 
 export function isTool(name) {
@@ -157,10 +232,10 @@ export function isAction(name) {
 }
 
 
-export function getToolDocs() {
+export function getToolDocs(agent = null) {
     // generate a string documenting all tools
     let docs = "Available Tools:\n";
-    for (const tool of toolList) {
+    for (const tool of toolList.filter(item => !isBlockedForAgent(agent, item.name))) {
         docs += `\n${tool.name}: ${tool.description}\nParameters:\n`;
         if (Array.isArray(tool.parameters)) {
             for (const param of tool.parameters) {

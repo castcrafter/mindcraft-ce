@@ -3,6 +3,31 @@ import { getKey, hasKey } from '../utils/keys.js';
 import { strictFormat } from '../utils/text.js';
 import { responseFormatSchema } from './_response_format.js';
 
+function toResponsesTools(tools = []) {
+    return tools.map(tool => tool?.function ? {
+        type: 'function',
+        name: tool.function.name,
+        description: tool.function.description,
+        parameters: tool.function.parameters,
+        strict: tool.function.strict
+    } : tool);
+}
+
+function toResponsesFormat(responseFormat) {
+    if (!responseFormat)
+        return null;
+    if (responseFormat.type === 'json_schema' && responseFormat.json_schema) {
+        return {
+            type: 'json_schema',
+            name: responseFormat.json_schema.name || 'agent_response',
+            schema: responseFormat.json_schema.schema,
+            // Agent schemas contain optional fields, so use non-strict schema guidance.
+            strict: false
+        };
+    }
+    return responseFormat;
+}
+
 export class GPT {
     static prefix = 'openai';
     constructor(model_name, url, params) {
@@ -22,12 +47,7 @@ export class GPT {
     }
 
     async sendRequest(turns, systemMessage, tools = [], responseFormat = responseFormatSchema) {
-        let stop_seq='***';
         let messages = strictFormat(turns);
-        messages = messages.map(message => {
-            message.content += stop_seq;
-            return message;
-        });
         let model = this.model_name || "gpt-4o-mini";
 
         let res = null;
@@ -35,29 +55,32 @@ export class GPT {
 
         try {
             console.log('Awaiting openai api response from model', model)
-            const response = await this.openai.responses.create({
+            const request = {
                 model: model,
                 instructions: systemMessage,
                 input: messages,
-                tools: tools,
-                text: { format: responseFormat },
                 ...(this.params || {})
-            });
+            };
+            if (tools?.length)
+                request.tools = toResponsesTools(tools);
+            const format = toResponsesFormat(responseFormat);
+            if (format)
+                request.text = { format };
+            const response = await this.openai.responses.create(request);
             console.log('Received.')
             res = response.output_text;
-            let stop_seq_index = res.indexOf(stop_seq);
-            res = stop_seq_index !== -1 ? res.slice(0, stop_seq_index) : res;
-            for (const tool_call of response.tool_calls || []) {
+            for (const tool_call of (response.output || []).filter(item => item.type === 'function_call')) {
                 function_calls.push({
-                    name: tool_call.function.name,
-                    arguments: tool_call.function.arguments
+                    id: tool_call.call_id || tool_call.id,
+                    name: tool_call.name,
+                    arguments: tool_call.arguments
                 });
             }
         }
         catch (err) {
             if ((err.message == 'Context length exceeded' || err.code == 'context_length_exceeded') && turns.length > 1) {
                 console.log('Context length exceeded, trying again with shorter context.');
-                return await this.sendRequest(turns.slice(1), systemMessage, stop_seq);
+                return await this.sendRequest(turns.slice(1), systemMessage, tools, responseFormat);
             } else if (err.message.includes('image_url')) {
                 console.log(err);
                 res = 'Vision is only supported by certain models.';

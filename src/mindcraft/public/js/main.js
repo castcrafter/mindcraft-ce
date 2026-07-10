@@ -181,6 +181,8 @@ socket.on('state-update', (states) => {
             const equippedEl = document.getElementById(`equipped-${name}`);
             const invGrid = document.getElementById(`inventory-${name}`);
             const actionEl = document.getElementById(`action-${name}`);
+            const goalEl = document.getElementById(`goal-${name}`);
+            const agentTaskEl = document.getElementById(`agentTask-${name}`);
             if (posEl && gp.position) {
                 const p = gp.position;
                 posEl.textContent = `x ${p.x}, y ${p.y}, z ${p.z}`;
@@ -212,6 +214,18 @@ socket.on('state-update', (states) => {
             }
             if (actionEl && st.action) {
                 actionEl.textContent = `${st.action.current || 'Idle'}`;
+            }
+            if (goalEl) {
+                const system = st.agentSystem || {};
+                const autonomy = system.autonomy;
+                const suffix = autonomy?.enabled ? (autonomy.paused ? ' (paused)' : ' (active)') : '';
+                goalEl.textContent = `goal: ${system.activeGoal || 'none'}${suffix}`;
+            }
+            if (agentTaskEl) {
+                const task = st.agentSystem?.task;
+                agentTaskEl.textContent = task
+                    ? `task ${task.step}: ${task.description}`
+                    : 'task: none';
             }
             if (invGrid && st.inventory?.counts) {
                 const counts = st.inventory.counts;

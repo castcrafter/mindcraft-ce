@@ -32,43 +32,35 @@ const minecraft_wiki_schema = new Schema([
     ]);
 
 
-const skills_schema = new Schema([
-    // Define fields for skills storage
-]);
-
-const memory_schema = new Schema([
-    // Define fields for memory storage
-]);
-
-
-
 export class RAGManager {
     constructor(agent) {
         this.agent = agent;
-
         this.global_client = null;
         this.minecraft_wiki_table = null;
+        this.ready = this._initialize();
+    }
 
-        connect('./database').then(client => {
-            this.global_client = client;
-            this.global_client.createEmptyTable('minecraft_wiki', minecraft_wiki_schema, { existOk: true, mode: 'create'}).then(table => {
-                this.minecraft_wiki_table = table;
-            });
-        });
-        this.agent_client = null;
-        connect(`./bots/${this.agent.name}/rag`).then(client => {
-            this.agent_client = client;
-            this.agent_client.createEmptyTable('agent_skills',skills_schema, { existOk: true, mode: 'create'}).then(table => {
-                this.skills_table = table;
-            });
-            this.agent_client.createEmptyTable('agent_memory',memory_schema, { existOk: true, mode: 'create'}).then(table => {
-                this.memory_table = table;
-            });
-        });
-    }   
+    async _initialize() {
+        try {
+            this.global_client = await connect('./database');
+            this.minecraft_wiki_table = await this.global_client.createEmptyTable(
+                'minecraft_wiki', minecraft_wiki_schema, { existOk: true, mode: 'create' }
+            );
+        } catch (error) {
+            console.warn(`RAG initialization failed; persistent JSON memory remains available: ${error.message}`);
+        }
+    }
 
 
     async getMinecraftContext(query, topK=1) {
+        await this.ready;
+        if (!this.minecraft_wiki_table)
+            return '';
+        if (typeof this.minecraft_wiki_table.countRows === 'function') {
+            const rows = await this.minecraft_wiki_table.countRows();
+            if (rows === 0)
+                return '';
+        }
         let vector = await this.agent.prompter.embedding_model.embed(query);
         const results = await this.minecraft_wiki_table.search(vector).limit(topK).toArray();
 
@@ -93,8 +85,7 @@ export class RAGManager {
     }
     
     async getMemoryContext(query, topK=5) {
-        console.warn('to be implemented: getMemoryContext');
-        return '';
+        return this.agent.stateStore?.searchMemory(query, topK) || '';
     }
 
     async getRAGContext(query, topK=5) {
@@ -111,6 +102,6 @@ export class RAGManager {
 
 
     async addToMemory(id, content, metadata={}) {
-        console.warn('to be implemented: addToMemory');
+        this.agent.stateStore?.remember('memory', content, { id, ...metadata });
     }
 }

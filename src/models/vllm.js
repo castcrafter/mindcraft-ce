@@ -61,29 +61,13 @@ export class VLLM {
         catch (err) {
             if ((err.message == 'Context length exceeded' || err.code == 'context_length_exceeded') && turns.length > 1) {
                 console.log('Context length exceeded, trying again with shorter context.');
-                return await this.sendRequest(turns.slice(1), systemMessage, stop_seq, tools);
+                return await this.sendRequest(turns.slice(1), systemMessage, tools, responseFormat);
             } else {
                 console.log(err);
                 res = 'My brain disconnected, try again.';
             }
         }
         return [res, function_calls];
-    }
-
-    async saveToFile(logFile, logEntry) {
-        let task_id = this.agent.task.task_id;
-        console.log(task_id)
-        let logDir;
-        if (this.task_id === null) {
-            logDir = path.join(__dirname, `../../bots/${this.agent.name}/logs`);
-        } else {
-            logDir = path.join(__dirname, `../../bots/${this.agent.name}/logs/${task_id}`);
-        }
-
-        await fs.mkdir(logDir, { recursive: true });
-
-        logFile = path.join(logDir, logFile);
-        await fs.appendFile(logFile, String(logEntry), 'utf-8');
     }
 
 }

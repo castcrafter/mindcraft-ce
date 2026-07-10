@@ -4,7 +4,7 @@ import { VisionInterpreter } from './vision/vision_interpreter.js';
 import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
 import { initBot } from '../utils/mcdata.js';
-import { containsToolCall, isAction, blacklistTools, isTool, executeTool } from './commands/index.js';
+import { containsToolCall, parseToolCall, isAction, isTool, executeTool, initializeTools } from './commands/index.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
@@ -22,6 +22,8 @@ import { RPAgent } from './agents/rp.js';
 import { TaskAgent } from './agents/task.js';
 import { MessageQueue } from './message_queue.js';
 import { createLogger } from '../utils/logger.js';
+import { PersistentAgentState } from './persistent_state.js';
+import { ProgressReporter } from './progress_reporter.js';
 
 const log = createLogger('Agent');
 
@@ -29,16 +31,29 @@ export class Agent {
     async start(load_mem = false, init_message = null, count_id = 0) {
         this.last_sender = null;
         this.count_id = count_id;
+        this._incomingMessages = [];
+        this._drainingIncomingMessages = false;
+        this._goalContinuationTimer = null;
 
         this.actions = new ActionManager(this);
         this.prompter = new Prompter(this, settings.profile);
         this.name = this.prompter.getName();
+        this.stateStore = new PersistentAgentState(this.name, {
+            enabled: settings.agent_state_enabled !== false,
+            maxEvents: settings.persistent_memory_max_events,
+            maxBrainMessages: settings.max_messages,
+            maxTaskMessages: settings.task_checkpoint_messages
+        });
+        this.progress = new ProgressReporter(this);
         this.rag = new RAGManager(this);
         log.info(`Starting ${this.name}...`);
         this.history = new History(this);
         this.coder = new Coder(this);
         this.npc = new NPCContoller(this);
-        this.memory_bank = new MemoryBank();
+        this.memory_bank = new MemoryBank(
+            this.stateStore.snapshot().places,
+            places => this.stateStore.savePlaces(places)
+        );
         this.self_prompter = new SelfPrompter(this);
         convoManager.initAgent(this);
         if (settings.use_brain_agent) {
@@ -63,8 +78,8 @@ export class Agent {
             taskStart = Date.now();
         }
         this.task = new Task(this, settings.task, taskStart);
-        this.blocked_actions = settings.blocked_actions.concat(this.task.blocked_actions || []);
-        blacklistTools(this.blocked_actions);
+        this.blocked_actions = (settings.blocked_actions || []).concat(this.task.blocked_actions || []);
+        await initializeTools();
 
         log.info(this.name, 'logging into minecraft...');
         this.bot = initBot(this.name);
@@ -84,7 +99,7 @@ export class Agent {
         const spawnTimeoutDuration = settings.spawn_timeout;
         const spawnTimeout = setTimeout(() => {
             log.error(`Bot has not spawned after ${spawnTimeoutDuration} seconds. Exiting.`);
-            process.exit(0);
+            process.exit(1);
         }, spawnTimeoutDuration * 1000);
         this.bot.once('spawn', async () => {
             try {
@@ -99,7 +114,7 @@ export class Agent {
                 log.info(`${this.name} spawned.`);
                 this.clearBotLogs();
 
-                this._setupEventHandlers(save_data, init_message);
+                await this._setupEventHandlers(save_data, init_message);
                 this.startEvents();
 
                 if (!load_mem) {
@@ -114,12 +129,14 @@ export class Agent {
                     }
                 }
 
+                await this._resumePersistentWork();
+
                 await new Promise((resolve) => setTimeout(resolve, 10000));
                 this.checkAllPlayersPresent();
 
             } catch (error) {
                 log.error('Error in spawn event:', error);
-                process.exit(0);
+                this.cleanKill(`Spawn initialization failed: ${error.message}`, 1);
             }
         });
     }
@@ -150,7 +167,7 @@ export class Agent {
                 }
                 else {
                     let translation = await handleEnglishTranslation(message);
-                    this.handleMessage(username, translation);
+                    await this.handleMessage(username, translation);
                 }
             } catch (error) {
                 log.error('Error handling message:', error);
@@ -174,9 +191,15 @@ export class Agent {
             bannedFood: ["rotten_flesh", "spider_eye", "poisonous_potato", "pufferfish", "chicken"]
         };
 
-        if (save_data?.self_prompt) {
+        const hasPersistentWork = Boolean(
+            settings.use_brain_agent && this.brainAgent &&
+            ((settings.resume_active_task !== false && this.stateStore.getPendingTask()) ||
+                this.brainAgent.isAutonomyActive())
+        );
+
+        if (save_data?.self_prompt && !hasPersistentWork) {
             if (init_message) {
-                this.history.add('system', init_message);
+                await this.history.add('system', init_message);
             }
             await this.self_prompter.handleLoad(save_data.self_prompt, save_data.self_prompting_state);
         }
@@ -190,11 +213,14 @@ export class Agent {
                 convoManager.receiveFromBot(this.last_sender, msg_package);
             }
         }
-        else if (init_message) {
+        if (hasPersistentWork) {
+            this.progress.report('Persistent work found; preparing recovery', { force: true });
+        }
+        else if (!save_data?.last_sender && init_message) {
             await this.handleMessage('system', init_message, 2);
         }
-        else {
-            this.openChat("Hello world! I am " + this.name);
+        else if (!save_data?.last_sender) {
+            await this.openChat("Hello world! I am " + this.name);
         }
     }
 
@@ -231,7 +257,34 @@ export class Agent {
         convoManager.endAllConversations();
     }
 
-    async handleMessage(source, message, max_responses = null) {
+    handleMessage(source, message, max_responses = null) {
+        return new Promise((resolve, reject) => {
+            this._incomingMessages.push({ source, message, max_responses, resolve, reject });
+            this._drainIncomingMessages().catch(error => {
+                log.error('Incoming message queue failed:', error);
+            });
+        });
+    }
+
+    async _drainIncomingMessages() {
+        if (this._drainingIncomingMessages)
+            return;
+        this._drainingIncomingMessages = true;
+        try {
+            while (this._incomingMessages.length > 0) {
+                const item = this._incomingMessages.shift();
+                try {
+                    item.resolve(await this._handleMessageNow(item.source, item.message, item.max_responses));
+                } catch (error) {
+                    item.reject(error);
+                }
+            }
+        } finally {
+            this._drainingIncomingMessages = false;
+        }
+    }
+
+    async _handleMessageNow(source, message, max_responses = null) {
         await this.checkTaskDone();
         if (!source || !message) {
             log.warn('Received empty message from', source);
@@ -251,16 +304,20 @@ export class Agent {
         const from_other_bot = convoManager.isOtherAgent(source);
 
         if (!self_prompt && !from_other_bot) { // from user, check for forced commands
-            const user_command_name = containsToolCall(message);
-            if (user_command_name) {
-                if (!isTool(user_command_name)) {
-                    this.routeResponse(source, `Command '${user_command_name}' does not exist.`);
+            const userCommand = parseToolCall(message);
+            if (userCommand) {
+                if (!isTool(userCommand.name)) {
+                    this.routeResponse(source, `Command '${userCommand.name}' does not exist.`);
                     return false;
                 }
-                this.routeResponse(source, `*${source} used ${user_command_name.substring(1)}*`);
-                let execute_res = await executeTool(this, message);
-                if (execute_res)
-                    this.routeResponse(source, execute_res);
+                this.routeResponse(source, `*${source} used ${userCommand.name}*`);
+                try {
+                    const execute_res = await executeTool(this, userCommand.name, userCommand.arguments);
+                    if (execute_res)
+                        this.routeResponse(source, execute_res);
+                } catch (error) {
+                    this.routeResponse(source, `Command failed: ${error.message}`);
+                }
                 return true;
             }
         }
@@ -276,7 +333,9 @@ export class Agent {
             try {
                 const decision = await this.brainAgent.processRequest(source, message);
                 if (!decision) {
-                    log.info('No brain decision, falling through.');
+                    log.warn('BrainAgent could not produce a decision.');
+                    this.progress.report('Planning request failed; waiting for the next retry', { force: true });
+                    return false;
                 } else if (decision.route === 'queued') {
                     return false;
                 } else if (decision.route === 'rp') {
@@ -286,41 +345,35 @@ export class Agent {
                 } else if (decision.route === 'task') {
                     const taskAction = decision.task_action || 'start';
 
-                    if (this.taskAgent.is_running && taskAction === 'inject') {
-                        this.messageQueue.enqueue({
-                            source,
-                            message: decision.task_description || message,
-                            type: 'context'
-                        });
-                        const reply = await this.rpAgent.respond(source, message, decision);
-                        if (reply) this.routeResponse(source, reply);
-                        return false;
-                    } else if (this.taskAgent.is_running && taskAction === 'cancel_and_start') {
-                        this.messageQueue.enqueue({ source, message: 'cancel', type: 'cancel' });
-                        if (this._activeTaskPromise) {
-                            try { await this._activeTaskPromise; } catch (e) { /* ignore */ }
+                    if (this.taskAgent.is_running) {
+                        if (taskAction === 'cancel_and_start') {
+                            this.messageQueue.enqueue({ source, message: 'cancel', type: 'cancel' });
+                            if (this._activeTaskPromise) {
+                                try { await this._activeTaskPromise; } catch { /* task reports its own failure */ }
+                            }
+                        } else {
+                            this.messageQueue.enqueue({
+                                source,
+                                message: decision.task_description || message,
+                                type: 'context'
+                            });
+                            const reply = await this.rpAgent.respond(source, message, decision);
+                            if (reply) this.routeResponse(source, reply);
+                            return false;
                         }
                     }
 
                     const ackReply = await this.rpAgent.respond(source, message, decision);
                     if (ackReply) this.routeResponse(source, ackReply);
 
-                    this._activeTaskPromise = this.taskAgent.performTask(
-                        decision.task_description, decision.task_system_prompt
-                    ).then(result => {
-                        this.brainAgent.recordTaskOutcome(result);
-                        if (result.chat_response) this.routeResponse(source, result.chat_response);
-                        this._activeTaskPromise = null;
-                    }).catch(error => {
-                        log.error('Task failed:', error.message);
-                        this.routeResponse(source, 'Task failed unexpectedly.');
-                        this._activeTaskPromise = null;
-                    });
+                    this._startAgentTask(decision, source);
 
                     return false;
                 }
             } catch (error) {
-                log.error('Brain error, falling through:', error.message);
+                log.error('Brain error:', error.message);
+                this.progress.report('Planner failed; the current checkpoint is safe', { force: true });
+                return false;
             }
         }
 
@@ -467,6 +520,100 @@ export class Agent {
         return used_command;
     }
 
+    _startAgentTask(decision, source, options = {}) {
+        if (!this.taskAgent || this.taskAgent.is_running || this._activeTaskPromise)
+            return false;
+
+        const taskPromise = this.taskAgent.performTask(
+            decision.task_description,
+            decision.task_system_prompt,
+            {
+                source,
+                resumeState: options.resumeState || null
+            }
+        );
+        this._activeTaskPromise = taskPromise;
+
+        taskPromise.then(result => {
+            this._activeTaskPromise = null;
+            this.brainAgent.recordTaskOutcome(result);
+            if (result.chat_response)
+                this.routeResponse(source, result.chat_response);
+
+            if (this.brainAgent.isAutonomyActive()) {
+                const maxFailures = Number(settings.autonomy_max_consecutive_failures) || 5;
+                if (this.brainAgent.autonomy.consecutive_failures >= maxFailures) {
+                    this.brainAgent.pauseAutonomy();
+                    this.progress.report(
+                        `Goal paused after ${maxFailures} failed subtasks; use !resumeGoal() to continue`,
+                        { force: true }
+                    );
+                } else {
+                    this.scheduleGoalContinuation(result);
+                }
+            }
+        }).catch(error => {
+            this._activeTaskPromise = null;
+            log.error('Task failed outside its recovery boundary:', error);
+            this.stateStore.remember('task_error', error.message || String(error));
+            this.routeResponse(source, 'Task failed unexpectedly; the last checkpoint is still on disk.');
+            if (this.brainAgent.isAutonomyActive())
+                this.scheduleGoalContinuation({ work_done: false, chat_response: error.message });
+        });
+        return true;
+    }
+
+    async _resumePersistentWork() {
+        if (!settings.use_brain_agent || !this.brainAgent || !this.taskAgent)
+            return false;
+
+        const pendingTask = settings.resume_active_task === false
+            ? null
+            : this.stateStore.getPendingTask();
+        if (pendingTask) {
+            this.progress.report(
+                `Resuming ${pendingTask.description} from step ${pendingTask.step || 0}`,
+                { force: true }
+            );
+            return this._startAgentTask({
+                task_description: pendingTask.description,
+                task_system_prompt: pendingTask.system_prompt || ''
+            }, pendingTask.source || this.last_sender || 'system', { resumeState: pendingTask });
+        }
+
+        if (this.brainAgent.isAutonomyActive()) {
+            this.progress.report(`Resuming goal: ${this.brainAgent.active_goal}`, { force: true });
+            this.scheduleGoalContinuation(null, 1000);
+            return true;
+        }
+        return false;
+    }
+
+    scheduleGoalContinuation(lastResult = null, delayMs = null) {
+        if (!this.brainAgent?.isAutonomyActive())
+            return false;
+        if (this.taskAgent?.is_running || this._activeTaskPromise)
+            return false;
+
+        if (this._goalContinuationTimer)
+            clearTimeout(this._goalContinuationTimer);
+        const delay = (delayMs ?? Number(settings.autonomy_continue_delay_ms)) || 3000;
+        this._goalContinuationTimer = setTimeout(() => {
+            this._goalContinuationTimer = null;
+            if (!this.brainAgent.isAutonomyActive() || this.taskAgent?.is_running || this._activeTaskPromise)
+                return;
+            const prompt = this.brainAgent.getContinuationPrompt(lastResult);
+            if (!prompt)
+                return;
+            this.handleMessage('system', prompt).catch(error => {
+                log.error('Autonomous continuation failed:', error);
+                this.stateStore.remember('autonomy_error', error.message || String(error));
+            });
+        }, delay);
+        this._goalContinuationTimer.unref?.();
+        return true;
+    }
+
     async routeResponse(to_player, message) {
         if (this.shut_up) return;
         let self_prompt = to_player === 'system' || to_player === this.name;
@@ -560,9 +707,10 @@ export class Agent {
                 this.memory_bank.rememberPlace('last_death_position', death_pos.x, death_pos.y, death_pos.z);
                 let death_pos_text = null;
                 if (death_pos) {
-                    death_pos_text = `x: ${death_pos.x.toFixed(2)}, y: ${death_pos.y.toFixed(2)}, z: ${death_pos.x.toFixed(2)}`;
+                    death_pos_text = `x: ${death_pos.x.toFixed(2)}, y: ${death_pos.y.toFixed(2)}, z: ${death_pos.z.toFixed(2)}`;
                 }
                 let dimention = this.bot.game.dimension;
+                this.stateStore?.remember('death', `${message}; position ${death_pos_text || 'unknown'} in ${dimention}`);
                 this.handleMessage('system', `You died at position ${death_pos_text || "unknown"} in the ${dimention} dimension with the final message: '${message}'. Your place of death is saved as 'last_death_position' if you want to return. Previous actions were stopped and you have respawned.`);
             }
         });
@@ -610,8 +758,13 @@ export class Agent {
 
 
     cleanKill(msg = 'Killing agent process...', code = 1) {
+        this.stateStore?.remember('lifecycle', msg, {
+            exit_code: code,
+            active_task: this.taskAgent?.currentTaskDescription || null,
+            active_goal: this.brainAgent?.active_goal || null
+        });
         this.history.add('system', msg);
-        this.bot.chat(code > 1 ? 'Restarting.' : 'Exiting.');
+        this.bot.chat(code === 1 ? 'Restarting.' : 'Exiting.');
         this.history.save();
         process.exit(code);
     }

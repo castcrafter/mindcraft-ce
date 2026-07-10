@@ -37,14 +37,36 @@ const argv = yargs(args)
     })
     .argv;
 
+let activeAgent = null;
+let shuttingDown = false;
+
+function handleShutdown(signal) {
+    if (shuttingDown)
+        return;
+    shuttingDown = true;
+    try {
+        activeAgent?.stateStore?.remember('lifecycle', `Agent process received ${signal}`, {
+            active_task: activeAgent?.taskAgent?.currentTaskDescription || null,
+            active_goal: activeAgent?.brainAgent?.active_goal || null
+        });
+        activeAgent?.bot?.quit?.(`Process received ${signal}`);
+    } catch (error) {
+        console.error('Failed to save shutdown state:', error);
+    }
+    process.exit(0);
+}
+
+process.once('SIGINT', () => handleShutdown('SIGINT'));
+process.once('SIGTERM', () => handleShutdown('SIGTERM'));
+
 (async () => {
     try {
         console.log('Connecting to MindServer');
         await serverProxy.connect(argv.name, argv.port);
         console.log('Starting agent');
-        const agent = new Agent();
-        serverProxy.setAgent(agent);
-        await agent.start(argv.load_memory, argv.init_message, argv.count_id);
+        activeAgent = new Agent();
+        serverProxy.setAgent(activeAgent);
+        await activeAgent.start(argv.load_memory, argv.init_message, argv.count_id);
     } catch (error) {
         console.error('Failed to start agent process:');
         console.error(error.message);

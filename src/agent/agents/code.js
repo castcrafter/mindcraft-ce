@@ -45,6 +45,10 @@ export class CodeAgent {
 
     async generateAugment(spec) {
         const { augment_name, description, parameters, task_context } = spec;
+        if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(augment_name || ''))
+            throw new Error('Augment name must start with a letter and contain only letters, numbers, and underscores.');
+        if (!Array.isArray(parameters) || parameters.some(parameter => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(parameter?.name || '')))
+            throw new Error('Augment parameters must be an array with valid JavaScript identifier names.');
         log.info(`Generating augment: ${augment_name}`);
 
         for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
@@ -130,10 +134,10 @@ export class CodeAgent {
         const paramNames = parameters.map(p => p.name).join(', ');
         const argsObj = parameters.map(p => p.name).join(', ');
 
-        return `import BaseTool from "../base_tool.js";
-import CommandProperty from "../property.js";
-import * as skills from "../../library/skills.js";
-import * as world from "../../library/world.js";
+        return `import BaseTool from "../../base_tool.js";
+import CommandProperty from "../../property.js";
+import * as skills from "../../../library/skills.js";
+import * as world from "../../../library/world.js";
 import { Vec3 } from "vec3";
 
 class ${className} extends BaseTool {
@@ -175,6 +179,8 @@ export default ${className};
 
         const toolInstance = new ToolClass();
         augmentRegistry.set(toolInstance.name, toolInstance);
+        const { registerTool } = await import('../commands/index.js');
+        registerTool(toolInstance);
         log.info(`Registered augment: ${toolInstance.name}`);
         return toolInstance;
     }
