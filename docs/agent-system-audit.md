@@ -28,6 +28,7 @@ This audit covers the experimental `agent-system` branch and the productionizati
 - Per-step active-task checkpoints and automatic restart recovery.
 - Autonomous re-planning after each bounded task, with retry delay and failure circuit breaker.
 - Explicit `setGoal`, `goalStatus`, `pauseGoal`, `resumeGoal`, and `clearGoal` tools.
+- Compatibility recovery that converts known model-written legacy `!tool(...)` text, including case/hyphen aliases, into validated internal tool calls.
 - Serialized incoming message processing and safe injection/cancellation of running tasks.
 - Throttled Minecraft progress reporter with public plan summaries and human-readable tool activity.
 - DeepSeek streaming, thinking/tool-call continuity, supported JSON mode, retries, and non-stream fallback.

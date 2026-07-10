@@ -9,7 +9,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { selectAPI, createModel } from './_model_map.js';
-import { getToolDefinitions, containsToolCall } from '../agent/commands/index.js';
+import { getToolDefinitions, parseToolCalls } from '../agent/commands/index.js';
 import { encode } from '@toon-format/toon';
 import { createLogger } from '../utils/logger.js';
 import { listAugments } from '../agent/agents/code.js';
@@ -281,16 +281,8 @@ export class Prompter {
         // parse inline !command calls from chat_response
         try {
             let result = JSON.parse(generation);
-            if (result.chat_response && result.chat_response.includes('!') && containsToolCall(result.chat_response)) {
-                function_calls = [];
-                const tool_call_regex = /!(\w+)(\((.*?)\))?/g;
-                let match;
-                while ((match = tool_call_regex.exec(result.chat_response)) !== null) {
-                    const tool_name = match[1];
-                    const tool_args = match[3] ? match[3].split(',').map(arg => arg.trim().replace(/^"|"$/g, '')) : [];
-                    function_calls.push({ name: tool_name, arguments: tool_args });
-                }
-            }
+            if ((!function_calls || function_calls.length === 0) && result.chat_response)
+                function_calls = parseToolCalls(result.chat_response);
         } catch (e) { /* not JSON */ }
 
         return [generation, function_calls];

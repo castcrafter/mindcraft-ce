@@ -1,5 +1,11 @@
 import { randomUUID } from 'crypto';
-import { executeTool, getToolDocs, getToolDefinitions } from '../commands/index.js';
+import {
+    executeTool,
+    getToolDocs,
+    getToolDefinitions,
+    initializeTools,
+    parseToolCalls
+} from '../commands/index.js';
 import { CodeAgent, getAugment } from './code.js';
 import { createLogger } from '../../utils/logger.js';
 import settings from '../settings.js';
@@ -49,6 +55,7 @@ export class TaskAgent {
     async performTask(taskDescription, systemPrompt, options = {}) {
         if (this.is_running)
             throw new Error('TaskAgent is already running a task.');
+        await initializeTools();
 
         const resumeState = options.resumeState || null;
         const maxSteps = Number(settings.task_max_steps) || DEFAULT_MAX_STEPS;
@@ -149,13 +156,27 @@ export class TaskAgent {
                     stopThinking();
                 }
 
-                const calls = Array.isArray(toolCalls) ? toolCalls : [];
+                const parsed = this._parseResponse(response);
+                let calls = Array.isArray(toolCalls) ? toolCalls : [];
+                if (calls.length === 0) {
+                    const recoveredCalls = this._recoverLegacyToolCalls(response, parsed);
+                    if (recoveredCalls.length > 0) {
+                        calls = recoveredCalls;
+                        const names = calls.map(call => call.name).join(', ');
+                        log.warn(`Converted legacy inline command(s) to native tool execution: ${names}`);
+                        this.agent.stateStore?.remember(
+                            'legacy_tool_recovery',
+                            `Converted inline command(s) to tool calls: ${names}`,
+                            { task_id: this.currentTaskId, step: this.currentStep }
+                        );
+                        this.agent.progress?.report?.(`Using recovered tool call: ${names}`);
+                    }
+                }
                 const assistantMessage = modelMetadata?.assistant_message;
                 history.push(assistantMessage
                     ? clone(assistantMessage)
                     : { role: 'assistant', content: response || '' });
 
-                const parsed = this._parseResponse(response);
                 if (parsed) {
                     lastParsed = parsed;
                     log.debug(`Private task thought: ${parsed.thought || ''}`);
@@ -410,5 +431,28 @@ export class TaskAgent {
         } catch {
             return null;
         }
+    }
+
+    _recoverLegacyToolCalls(response, parsed) {
+        if (!response)
+            return [];
+        if (!parsed)
+            return parseToolCalls(response);
+
+        const candidates = [
+            parsed.command,
+            parsed.tool_call,
+            parsed.next_action,
+            parsed.chat_response
+        ].filter(value => typeof value === 'string');
+
+        // A legacy model may put a bare command on its own line in `thought`.
+        // Do not execute commands that are merely mentioned inside prose.
+        if (typeof parsed.thought === 'string') {
+            candidates.push(...parsed.thought.split('\n')
+                .map(line => line.trim())
+                .filter(line => line.startsWith('!')));
+        }
+        return candidates.flatMap(candidate => parseToolCalls(candidate));
     }
 }

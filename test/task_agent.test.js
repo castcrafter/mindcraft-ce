@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PersistentAgentState } from '../src/agent/persistent_state.js';
 import { TaskAgent } from '../src/agent/agents/task.js';
+import { initializeTools, registerTool } from '../src/agent/commands/index.js';
 
 function fakeAgent(store, responses) {
     return {
@@ -90,6 +91,61 @@ test('TaskAgent resumes a saved task with a recovery instruction', async () => {
         assert.equal(result.steps, 5);
         assert.ok(capturedHistory.some(message => /process restarted/.test(message.content)));
         assert.equal(store.getPendingTask(), null);
+    } finally {
+        rmSync(baseDir, { recursive: true, force: true });
+    }
+});
+
+test('TaskAgent converts a model-written legacy command into a real tool call', async () => {
+    const baseDir = mkdtempSync(path.join(tmpdir(), 'mindcraft-task-'));
+    try {
+        await initializeTools();
+        let executions = 0;
+        registerTool({
+            name: 'testProbe',
+            description: 'Test-only probe.',
+            parameters: [],
+            is_action: false,
+            execute() {
+                executions++;
+                return 'probe succeeded';
+            }
+        });
+
+        const store = new PersistentAgentState('tester', { baseDir });
+        const legacyResponse = JSON.stringify({
+            thought: 'Use the old syntax by mistake',
+            progress_update: 'Checking state',
+            step_report: '',
+            work_done: false,
+            chat_response: '!TEST-PROBE()'
+        });
+        const completeResponse = JSON.stringify({
+            thought: 'The probe result is available',
+            progress_update: 'State checked',
+            step_report: 'probe succeeded',
+            work_done: true,
+            chat_response: 'Done.'
+        });
+        const task = new TaskAgent(fakeAgent(store, [
+            [legacyResponse, []],
+            [completeResponse, []]
+        ]), null);
+
+        assert.deepEqual(
+            task._recoverLegacyToolCalls('ignored', { thought: 'Do not use !testProbe in prose.' }),
+            []
+        );
+        assert.equal(
+            task._recoverLegacyToolCalls('ignored', { thought: '!TEST-PROBE()' })[0].name,
+            'testProbe'
+        );
+
+        const result = await task.performTask('Run probe', 'Use the probe tool.');
+        assert.equal(executions, 1);
+        assert.equal(result.work_done, true);
+        assert.match(store.searchMemory('legacy_tool_recovery'), /testProbe/);
+        assert.match(store.searchMemory('probe succeeded'), /probe succeeded/);
     } finally {
         rmSync(baseDir, { recursive: true, force: true });
     }

@@ -61,6 +61,8 @@ Messages are deduplicated and rate-limited. Relevant settings are:
 }
 ```
 
+Native function calling is the preferred execution path. If a model nevertheless emits an old inline command such as `!nearbyBlocks()` or `!nearby-blocks`, the TaskAgent recognizes known tool names and aliases, converts them to an internal tool call, executes the tool, and feeds the result back into the task loop. Unknown text commands are never executed.
+
 ## DeepSeek
 
 `profiles/deepseek.json` uses the current DeepSeek model, streaming, thinking mode, and retries. The adapter:

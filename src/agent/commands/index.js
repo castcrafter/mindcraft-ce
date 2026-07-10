@@ -178,21 +178,48 @@ function isBlockedForAgent(agent, name) {
 }
 
 export function parseToolCall(message) {
-    const match = String(message || '').match(/!(\w+)(?:\((.*?)\))?/s);
-    if (!match || !toolMap[match[1]])
-        return null;
+    return parseToolCalls(message)[0] || null;
+}
 
+export function parseToolCalls(message) {
+    const text = String(message || '');
+    const matches = text.matchAll(/!([A-Za-z][A-Za-z0-9_-]*)(?:\((.*?)\))?/gs);
+    const calls = [];
+
+    for (const match of matches) {
+        const name = resolveToolName(match[1]);
+        if (!name)
+            continue;
+
+        calls.push({
+            name,
+            arguments: parseInlineArguments(match[2])
+        });
+    }
+    return calls;
+}
+
+function resolveToolName(candidate) {
+    if (toolMap[candidate])
+        return candidate;
+    const normalized = candidate.replace(/[-_]/g, '').toLowerCase();
+    return Object.keys(toolMap).find(name =>
+        name.replace(/[-_]/g, '').toLowerCase() === normalized
+    ) || null;
+}
+
+function parseInlineArguments(argumentText) {
     let args = [];
-    if (match[2]?.trim()) {
+    if (argumentText?.trim()) {
         try {
-            args = JSON.parse(`[${match[2]}]`);
+            args = JSON.parse(`[${argumentText}]`);
         } catch {
-            args = match[2].split(',').map(value =>
+            args = argumentText.split(',').map(value =>
                 value.trim().replace(/^['"]|['"]$/g, '')
             );
         }
     }
-    return { name: match[1], arguments: args };
+    return args;
 }
 
 export function isTool(name) {
