@@ -1,7 +1,3 @@
-import * as skills from '../library/skills.js';
-import settings from '../settings.js';
-import convoManager from '../conversation.js';
-
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -11,27 +7,6 @@ const __dirname = path.dirname(__filename);
 const toolsPath = path.join(__dirname, 'tools');
 
 
-function runAsAction (actionFn, resume = false, timeout = -1) {
-    let actionLabel = null;  // Will be set on first use
-    
-    const wrappedAction = async function (agent, ...args) {
-        // Set actionLabel only once, when the action is first created
-        if (!actionLabel) {
-            const actionObj = actionsList.find(a => a.perform === wrappedAction);
-            actionLabel = actionObj.name.substring(1); // Remove the ! prefix
-        }
-
-        const actionFnWithAgent = async () => {
-            await actionFn(agent, ...args);
-        };
-        const code_return = await agent.actions.runAction(`action:${actionLabel}`, actionFnWithAgent, { timeout, resume });
-        if (code_return.interrupted && !code_return.timedout)
-            return;
-        return code_return.message;
-    }
-
-    return wrappedAction;
-}
 /*
 export const tools = () => {
     const tools = {};

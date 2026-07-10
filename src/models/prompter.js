@@ -196,8 +196,14 @@ export class Prompter {
         }
         if (prompt.includes('$EXAMPLES') && examples !== null)
             prompt = prompt.replaceAll('$EXAMPLES', await examples.createExampleMessage(messages));
-        if (prompt.includes('$MEMORY'))
-            prompt = prompt.replaceAll('$MEMORY', this.agent.history.memory);
+        if (prompt.includes('$MEMORY')) {
+            const persistentMemory = this.agent.stateStore?.getMemoryContext(
+                Number(settings.persistent_memory_context_events) || 12
+            ) || '';
+            const legacyMemory = this.agent.history?.memory || '';
+            const combinedMemory = [legacyMemory, persistentMemory].filter(Boolean).join('\n');
+            prompt = prompt.replaceAll('$MEMORY', combinedMemory || 'No persistent memory yet.');
+        }
         if (prompt.includes('$TO_SUMMARIZE'))
             prompt = prompt.replaceAll('$TO_SUMMARIZE', stringifyTurns(to_summarize));
         if (prompt.includes('$CONVO'))
@@ -306,7 +312,7 @@ export class Prompter {
             let generation, function_calls;
 
             try {
-                let tools = this.tool_type === 'tools' ? getToolDefinitions() : [];
+                let tools = this.tool_type === 'tools' ? getToolDefinitions(this.agent) : [];
                 [generation, function_calls] = await this.chat_model.sendRequest(messages, prompt, tools);
                 if (typeof generation !== 'string') {
                     log.error('Error: Generated response is not a string', generation);
@@ -352,7 +358,7 @@ export class Prompter {
         let prompt = this.profile.coding;
         prompt = await this.replaceStrings(prompt, messages, this.coding_examples);
 
-        let [resp, function_calls] = await this.code_model.sendRequest(messages, prompt, getToolDefinitions());
+        let [resp, function_calls] = await this.code_model.sendRequest(messages, prompt, getToolDefinitions(this.agent));
         this.awaiting_coding = false;
         await this._saveLog(prompt, messages, resp, 'coding');
         return resp;
@@ -362,7 +368,7 @@ export class Prompter {
         await this.checkCooldown();
         let prompt = this.profile.saving_memory;
         prompt = await this.replaceStrings(prompt, null, null, to_summarize);
-        let [resp, function_calls] = await this.chat_model.sendRequest([], prompt, getToolDefinitions());
+        let [resp, function_calls] = await this.chat_model.sendRequest([], prompt, getToolDefinitions(this.agent));
         await this._saveLog(prompt, to_summarize, resp, 'memSaving');
         if (resp?.includes('</think>')) {
             const [_, afterThink] = resp.split('</think>')
@@ -377,7 +383,7 @@ export class Prompter {
         let messages = this.agent.history.getHistory();
         messages.push({role: 'user', content: new_message});
         prompt = await this.replaceStrings(prompt, null, null, messages);
-        let [res, function_calls] = await this.chat_model.sendRequest([], prompt, getToolDefinitions());
+        let [res, function_calls] = await this.chat_model.sendRequest([], prompt, getToolDefinitions(this.agent));
         return res.trim().toLowerCase() === 'respond';
     }
 
@@ -385,7 +391,7 @@ export class Prompter {
         await this.checkCooldown();
         let prompt = this.profile.image_analysis;
         prompt = await this.replaceStrings(prompt, messages, null, null, null);
-        return await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer, getToolDefinitions());
+        return await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer, getToolDefinitions(this.agent));
     }
 
     async promptGoalSetting(messages, last_goals) {
@@ -398,7 +404,7 @@ export class Prompter {
         user_message = await this.replaceStrings(user_message, messages, null, null, last_goals);
         let user_messages = [{role: 'user', content: user_message}];
 
-        let [res, function_calls] = await this.chat_model.sendRequest(user_messages, system_message, getToolDefinitions());
+        let [res, function_calls] = await this.chat_model.sendRequest(user_messages, system_message, getToolDefinitions(this.agent));
 
         let goal = null;
         try {

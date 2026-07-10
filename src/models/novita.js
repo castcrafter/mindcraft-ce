@@ -55,7 +55,7 @@ export class Novita {
       catch (err) {
           if ((err.message == 'Context length exceeded' || err.code == 'context_length_exceeded') && turns.length > 1) {
               console.log('Context length exceeded, trying again with shorter context.');
-              return await sendRequest(turns.slice(1), systemMessage, stop_seq);
+              return await this.sendRequest(turns.slice(1), systemMessage, tools, responseFormat);
           } else {
             console.log(err);
               res = 'My brain disconnected, try again.';

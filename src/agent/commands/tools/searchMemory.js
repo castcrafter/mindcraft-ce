@@ -19,7 +19,7 @@ class SearchMemoryTool extends BaseTool {
         try {
             const context = await agent.rag.getMemoryContext(query, topK);
             if (!context || context.trim().length === 0) {
-                return `No memory results found for "${query}". Memory RAG backend is not yet fully implemented.`;
+                return `No persistent memory results found for "${query}".`;
             }
             return `Memory results for "${query}":\n${context}`;
         } catch (error) {

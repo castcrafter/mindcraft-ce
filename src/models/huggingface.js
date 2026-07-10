@@ -6,7 +6,7 @@ export class HuggingFace {
   static prefix = 'huggingface';
   constructor(model_name, url, params) {
     // Remove 'huggingface/' prefix if present
-    this.model_name = model_name.replace('huggingface/', '');
+    this.model_name = String(model_name || 'meta-llama/Meta-Llama-3-8B').replace('huggingface/', '');
     this.url = url;
     this.params = params;
 
@@ -45,12 +45,13 @@ export class HuggingFace {
           ...(this.params || {})
         })) {
           res += (chunk.choices[0]?.delta?.content || "");
-        }
-        for (const tool_call of chunk.choices[0]?.delta?.tool_calls || []) {
-          function_calls.push({
-              name: tool_call.function.name,
-              arguments: tool_call.function.arguments
-          });
+          for (const tool_call of chunk.choices[0]?.delta?.tool_calls || []) {
+            function_calls.push({
+                id: tool_call.id,
+                name: tool_call.function.name,
+                arguments: tool_call.function.arguments
+            });
+          }
         }
       } catch (err) {
         console.log(err);

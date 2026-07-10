@@ -57,6 +57,14 @@ export function getFullState(agent) {
             current: agent.isIdle() ? 'Idle' : agent.actions.currentActionLabel,
             isIdle: agent.isIdle()
         },
+        agentSystem: {
+            activeGoal: agent.brainAgent?.active_goal || null,
+            autonomy: agent.brainAgent ? { ...agent.brainAgent.autonomy } : null,
+            task: agent.taskAgent?.is_running ? {
+                description: agent.taskAgent.currentTaskDescription,
+                step: agent.taskAgent.currentStep
+            } : null
+        },
         surroundings: {
             below,
             legs,

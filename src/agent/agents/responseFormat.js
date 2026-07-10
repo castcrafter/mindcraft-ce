@@ -10,7 +10,11 @@ export const brainAgentResponseFormat = {
             "properties": {
                 "thoughts": {
                     "type": "string",
-                    "description": "Internal reasoning about how to handle this request."
+                    "description": "Private concise analysis used for routing. Never address the player here."
+                },
+                "progress_update": {
+                    "type": "string",
+                    "description": "Short player-safe summary of the approach. Do not include hidden chain-of-thought."
                 },
                 "route": {
                     "type": "string",
@@ -36,7 +40,7 @@ export const brainAgentResponseFormat = {
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["add", "remove", "set_priority", "mark_checklist_item", "recreate_checklist_item"],
+                            "enum": ["add", "remove", "complete", "set_active", "set_priority", "mark_checklist_item", "recreate_checklist_item", "pause", "resume"],
                             "description": "The action to perform on the goals."
                         },
                         "goal": { "type": "string", "description": "The goal name." },
@@ -44,11 +48,12 @@ export const brainAgentResponseFormat = {
                         "goal_description": { "type": "string", "description": "Description of the goal." },
                         "checklist": { "type": "array", "items": { "type": "string" }, "description": "Checklist items." },
                         "checklist_item": { "type": "string", "description": "Checklist item description." },
-                        "checklist_completed": { "type": "boolean", "description": "Whether the item is completed." }
+                        "checklist_completed": { "type": "boolean", "description": "Whether the item is completed." },
+                        "autonomous": { "type": "boolean", "description": "Whether the bot should keep working on this goal without another user prompt." }
                     }
                 }
             },
-            "required": ["thoughts", "route", "task_description", "task_system_prompt"]
+            "required": ["thoughts", "progress_update", "route", "task_description", "task_system_prompt"]
         }
     }
 };
@@ -83,6 +88,7 @@ export const taskAgentResponseFormat = {
             "type": "object",
             "properties": {
                 "thought": { "type": "string", "description": "Reasoning about what to do next." },
+                "progress_update": { "type": "string", "description": "Short player-safe description of the current plan or result, without hidden reasoning." },
                 "step_report": { "type": "string", "description": "Outcome of the previous action." },
                 "work_done": { "type": "boolean", "description": "Whether the task is fully complete." },
                 "chat_response": { "type": "string", "description": "Message to send back to the player when done." }

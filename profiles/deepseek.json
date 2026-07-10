@@ -1,7 +1,15 @@
 {
     "name": "deepseek",
-
-    "model": "deepseek-chat",
-
-    "embedding": "openai"
+    "model": {
+        "api": "deepseek",
+        "model": "deepseek-v4-pro",
+        "params": {
+            "stream": true,
+            "thinking": {
+                "type": "enabled"
+            },
+            "reasoning_effort": "high",
+            "request_retries": 3
+        }
+    }
 }

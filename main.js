@@ -4,6 +4,25 @@ import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { readFileSync } from 'fs';
 
+function parseJsonEnv(name, fallback) {
+    const raw = process.env[name];
+    if (!raw)
+        return fallback;
+    try {
+        return JSON.parse(raw);
+    } catch (error) {
+        console.error(`Ignoring invalid ${name}: ${error.message}`);
+        return fallback;
+    }
+}
+
+function parseBooleanEnv(name, fallback = false) {
+    const raw = process.env[name];
+    if (raw === undefined)
+        return fallback;
+    return ['1', 'true', 'yes', 'on'].includes(String(raw).toLowerCase());
+}
+
 function parseArguments() {
     return yargs(hideBin(process.argv))
         .option('profiles', {
@@ -39,28 +58,32 @@ if (args.task_path) {
 
 // these environment variables override certain settings
 if (process.env.MINECRAFT_PORT) {
-    settings.port = process.env.MINECRAFT_PORT;
+    settings.port = Number(process.env.MINECRAFT_PORT);
 }
 if (process.env.MINDSERVER_PORT) {
-    settings.mindserver_port = process.env.MINDSERVER_PORT;
+    settings.mindserver_port = Number(process.env.MINDSERVER_PORT);
 }
-if (process.env.PROFILES && JSON.parse(process.env.PROFILES).length > 0) {
-    settings.profiles = JSON.parse(process.env.PROFILES);
+if (process.env.PROFILES) {
+    const profiles = parseJsonEnv('PROFILES', null);
+    if (Array.isArray(profiles) && profiles.length > 0)
+        settings.profiles = profiles;
 }
 if (process.env.INSECURE_CODING) {
-    settings.allow_insecure_coding = true;
+    settings.allow_insecure_coding = parseBooleanEnv('INSECURE_CODING');
 }
 if (process.env.BLOCKED_ACTIONS) {
-    settings.blocked_actions = JSON.parse(process.env.BLOCKED_ACTIONS);
+    const blockedActions = parseJsonEnv('BLOCKED_ACTIONS', null);
+    if (Array.isArray(blockedActions))
+        settings.blocked_actions = blockedActions;
 }
 if (process.env.MAX_MESSAGES) {
-    settings.max_messages = process.env.MAX_MESSAGES;
+    settings.max_messages = Number(process.env.MAX_MESSAGES);
 }
 if (process.env.NUM_EXAMPLES) {
-    settings.num_examples = process.env.NUM_EXAMPLES;
+    settings.num_examples = Number(process.env.NUM_EXAMPLES);
 }
 if (process.env.LOG_ALL) {
-    settings.log_all_prompts = process.env.LOG_ALL;
+    settings.log_all_prompts = parseBooleanEnv('LOG_ALL');
 }
 
 Mindcraft.init(true, settings.mindserver_port, settings.auto_open_ui);

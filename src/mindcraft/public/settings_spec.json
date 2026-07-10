@@ -64,7 +64,7 @@
     "blocked_actions": {
         "type": "array",
         "description": "List of actions that are blocked",
-        "default": ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel"]
+        "default": ["checkBlueprint", "checkBlueprintLevel", "getBlueprint", "getBlueprintLevel"]
     },
     "relevant_docs_count": {
         "type": "number",
@@ -121,6 +121,76 @@
         "type": "boolean",
         "description": "Whether to allow newAction command that let's LLM write/run code on host computer. Despite sandboxxing, it is potentially insecure.",
         "default": false
+    },
+    "use_brain_agent": {
+        "type": "boolean",
+        "description": "Enable the planner/task agent system.",
+        "default": true
+    },
+    "agent_state_enabled": {
+        "type": "boolean",
+        "description": "Persist goals, recent memory and active task checkpoints across restarts.",
+        "default": true
+    },
+    "resume_active_task": {
+        "type": "boolean",
+        "description": "Resume a running task from its latest checkpoint after restart.",
+        "default": true
+    },
+    "persistent_memory_max_events": {
+        "type": "number",
+        "description": "Maximum number of recent persistent memory events.",
+        "default": 120
+    },
+    "persistent_memory_context_events": {
+        "type": "number",
+        "description": "Number of recent persistent memories included in planning prompts.",
+        "default": 12
+    },
+    "task_checkpoint_messages": {
+        "type": "number",
+        "description": "Number of active task messages retained for recovery.",
+        "default": 30
+    },
+    "task_max_steps": {
+        "type": "number",
+        "description": "Maximum model/tool iterations in one bounded task.",
+        "default": 50
+    },
+    "autonomy_continue_delay_ms": {
+        "type": "number",
+        "description": "Delay before the planner chooses the next autonomous subtask.",
+        "default": 3000
+    },
+    "autonomy_max_consecutive_failures": {
+        "type": "number",
+        "description": "Pause autonomous work after this many failed subtasks.",
+        "default": 5
+    },
+    "progress_chat": {
+        "type": "boolean",
+        "description": "Show throttled public plan and tool status in Minecraft chat.",
+        "default": true
+    },
+    "progress_chat_show_tools": {
+        "type": "boolean",
+        "description": "Show tool actions in Minecraft progress messages.",
+        "default": true
+    },
+    "progress_chat_show_plans": {
+        "type": "boolean",
+        "description": "Show model-generated player-safe plan summaries.",
+        "default": true
+    },
+    "progress_chat_min_interval_ms": {
+        "type": "number",
+        "description": "Minimum time between progress chat messages.",
+        "default": 2500
+    },
+    "progress_chat_interval_ms": {
+        "type": "number",
+        "description": "Interval for a status update while a model request is still running.",
+        "default": 12000
     },
     "code_timeout_mins": {
         "type": "number",

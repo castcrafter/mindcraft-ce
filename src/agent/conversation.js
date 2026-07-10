@@ -1,5 +1,8 @@
 import settings from './settings.js';
 import { sendBotChatToServer } from './mindserver_proxy.js';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('Conversation');
 
 let agent;
 let agent_names = [];

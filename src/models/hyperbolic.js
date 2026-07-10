@@ -40,6 +40,7 @@ export class Hyperbolic {
         const maxAttempts = 5;
         let attempt = 0;
         let finalRes = null;
+        let function_calls = [];
 
         while (attempt < maxAttempts) {
             attempt++;
@@ -47,7 +48,6 @@ export class Hyperbolic {
             console.log('Messages:', messages);
 
             let completionContent = null;
-            let function_calls = [];
 
             try {
                 const response = await fetch(this.apiUrl, {
@@ -69,13 +69,12 @@ export class Hyperbolic {
                 }
 
                 completionContent = data?.choices?.[0]?.message?.content || '';
-                if (!completionContent === '') {
-                    for (const tool_call of data.choices[0].message.tool_calls || []) {
-                        function_calls.push({
-                            name: tool_call.function.name,
-                            arguments: tool_call.function.arguments
-                        });
-                    }
+                for (const tool_call of data.choices[0].message.tool_calls || []) {
+                    function_calls.push({
+                        id: tool_call.id,
+                        name: tool_call.function.name,
+                        arguments: tool_call.function.arguments
+                    });
                 }
                 console.log('Received response from Hyperbolic.');
             } catch (err) {
@@ -84,7 +83,7 @@ export class Hyperbolic {
                     turns.length > 1
                 ) {
                     console.log('Context length exceeded, trying again with a shorter context...');
-                    return await this.sendRequest(turns.slice(1), systemMessage, stopSeq);
+                    return await this.sendRequest(turns.slice(1), systemMessage, tools);
                 } else {
                     console.error(err);
                     completionContent = 'My brain disconnected, try again.';

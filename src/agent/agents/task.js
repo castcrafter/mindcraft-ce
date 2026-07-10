@@ -1,11 +1,36 @@
+import { randomUUID } from 'crypto';
 import { executeTool, getToolDocs, getToolDefinitions } from '../commands/index.js';
 import { CodeAgent, getAugment } from './code.js';
 import { createLogger } from '../../utils/logger.js';
+import settings from '../settings.js';
 
 const log = createLogger('TaskAgent');
+const DEFAULT_MAX_STEPS = 50;
+const DEFAULT_MAX_NO_TOOL_STREAK = 3;
+const DEFAULT_MAX_MODEL_FAILURES = 3;
 
-const MAX_STEPS = 50;
-const MAX_NO_TOOL_STREAK = 3;
+function clone(value) {
+    return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function shortText(value, maxLength = 500) {
+    const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+    const cleaned = text.replace(/\s+/g, ' ').trim();
+    return cleaned.length > maxLength ? `${cleaned.slice(0, maxLength - 3)}...` : cleaned;
+}
+
+function normalizeArguments(args) {
+    if (!args)
+        return {};
+    if (typeof args === 'string') {
+        try {
+            return JSON.parse(args);
+        } catch {
+            return {};
+        }
+    }
+    return args;
+}
 
 export class TaskAgent {
     constructor(agent, messageQueue) {
@@ -15,183 +40,338 @@ export class TaskAgent {
         this.cancelJob = false;
         this.currentTaskDescription = null;
         this.currentStep = 0;
+        this.currentTaskId = null;
+        this.currentSystemPrompt = '';
+        this.currentHistory = [];
+        this.currentSource = 'system';
     }
 
-    async performTask(taskDescription, systemPrompt) {
+    async performTask(taskDescription, systemPrompt, options = {}) {
+        if (this.is_running)
+            throw new Error('TaskAgent is already running a task.');
+
+        const resumeState = options.resumeState || null;
+        const maxSteps = Number(settings.task_max_steps) || DEFAULT_MAX_STEPS;
+        const maxNoToolStreak = Number(settings.task_max_no_tool_streak) || DEFAULT_MAX_NO_TOOL_STREAK;
+        const maxModelFailures = Number(settings.task_max_model_failures) || DEFAULT_MAX_MODEL_FAILURES;
+
         this.is_running = true;
         this.cancelJob = false;
         this.currentTaskDescription = taskDescription;
-        this.currentStep = 0;
+        this.currentSystemPrompt = systemPrompt || '';
+        this.currentSource = options.source || resumeState?.source || 'system';
+        this.currentTaskId = resumeState?.id || randomUUID();
+        this.currentStep = Number(resumeState?.step) || 0;
 
-        log.info(`Starting: ${taskDescription}`);
+        let history;
+        let noToolStreak = Number(resumeState?.no_tool_streak) || 0;
+        let modelFailureStreak = 0;
+        let lastParsed = resumeState?.last_parsed || null;
+        const startedAt = resumeState?.started_at || new Date().toISOString();
 
-        // prepend task_agent.xml header if available
-        let taskHeader = '';
-        const headerTemplate = this.agent.prompter?.profile?.task_agent;
-        if (headerTemplate) {
-            taskHeader = await this.agent.prompter.replaceStrings(headerTemplate, [{ role: 'user', content: taskDescription }]);
-            taskHeader += '\n\n';
+        if (resumeState?.history?.length) {
+            history = clone(resumeState.history);
+            history.push({
+                role: 'user',
+                content: '[System recovery]: The agent process restarted. Re-check current game state before continuing; do not assume the interrupted action completed.'
+            });
+            this.agent.progress?.report?.(`Recovered task: ${taskDescription}`, { force: true });
+            this.agent.stateStore?.remember('recovery', `Resuming task at step ${this.currentStep}: ${taskDescription}`);
+        } else {
+            history = await this._buildInitialHistory(taskDescription, systemPrompt);
+            this.agent.progress?.report?.(`Starting task: ${taskDescription}`, { force: true });
+            this.agent.stateStore?.remember('task_start', taskDescription, { task_id: this.currentTaskId });
         }
 
-        const toolDocs = getToolDocs();
-        const fullPrompt = `${taskHeader}${systemPrompt}\n\nTask: ${taskDescription}\n\n${toolDocs}\n\n` +
-            `IMPORTANT: You MUST use the function calling interface to call tools. Do NOT just mention tools in your text response.\n` +
-            `After calling tools, respond with a brief JSON: {"thought": "...", "step_report": "...", "work_done": true/false}\n` +
-            `Set work_done to true ONLY when the task is fully complete. Include "chat_response" when done to report back.`;
+        this.currentHistory = history;
+        this._checkpoint(history, noToolStreak, lastParsed, startedAt);
+        log.info(`${resumeState ? 'Resuming' : 'Starting'}: ${taskDescription}`);
 
-        const history = [{ role: 'system', content: fullPrompt }];
-        let step = 0;
-        let noToolStreak = 0;
-        let lastParsed = null;
-
-        while (step < MAX_STEPS && !this.cancelJob) {
-            // drain queue from brain
-            if (this.messageQueue?.hasItems()) {
-                const items = this.messageQueue.drain();
-                for (const item of items) {
-                    if (item.type === 'cancel') {
-                        log.info('Cancel request from brain.');
-                        this.cancelJob = true;
-                        break;
+        try {
+            while (this.currentStep < maxSteps && !this.cancelJob) {
+                if (this.messageQueue?.hasItems()) {
+                    const items = this.messageQueue.drain();
+                    for (const item of items) {
+                        if (item.type === 'cancel') {
+                            log.info('Cancel request from brain.');
+                            this.cancelJob = true;
+                            break;
+                        }
+                        if (item.type === 'context') {
+                            log.info(`Brain update from ${item.source}: ${item.message}`);
+                            history.push({
+                                role: 'user',
+                                content: `[Brain Update from ${item.source}]: ${item.message}`
+                            });
+                            this.agent.stateStore?.remember('task_update', `${item.source}: ${item.message}`);
+                        }
                     }
-                    if (item.type === 'context') {
-                        log.info(`Brain update from ${item.source}: ${item.message}`);
-                        history.push({
-                            role: 'user',
-                            content: `[Brain Update from ${item.source}]: ${item.message}`
+                    if (this.cancelJob)
+                        break;
+                }
+
+                this.currentStep++;
+                log.info(`Step ${this.currentStep}/${maxSteps}`);
+                this._checkpoint(history, noToolStreak, lastParsed, startedAt);
+
+                let response;
+                let toolCalls;
+                let modelMetadata;
+                const stopThinking = this.agent.progress?.startThinking?.(
+                    `${this.currentTaskDescription} (step ${this.currentStep})`
+                ) || (() => {});
+                try {
+                    [response, toolCalls, modelMetadata] = await this.agent.prompter.chat_model.sendRequest(
+                        history, null, getToolDefinitions(this.agent), null
+                    );
+                    modelFailureStreak = 0;
+                } catch (error) {
+                    modelFailureStreak++;
+                    log.error(`LLM call failed at step ${this.currentStep}:`, error);
+                    this.agent.stateStore?.remember('model_error', shortText(error.message), {
+                        task_id: this.currentTaskId,
+                        step: this.currentStep
+                    });
+                    history.push({
+                        role: 'user',
+                        content: `[System error]: The model request failed: ${error.message}. Reassess and try again.`
+                    });
+                    this._checkpoint(history, noToolStreak, lastParsed, startedAt);
+                    if (modelFailureStreak >= maxModelFailures) {
+                        return this._finish('failed', {
+                            chat_response: `Task paused after ${modelFailureStreak} consecutive model errors. It can resume after restart or a new request.`,
+                            steps: this.currentStep,
+                            work_done: false
+                        });
+                    }
+                    continue;
+                } finally {
+                    stopThinking();
+                }
+
+                const calls = Array.isArray(toolCalls) ? toolCalls : [];
+                const assistantMessage = modelMetadata?.assistant_message;
+                history.push(assistantMessage
+                    ? clone(assistantMessage)
+                    : { role: 'assistant', content: response || '' });
+
+                const parsed = this._parseResponse(response);
+                if (parsed) {
+                    lastParsed = parsed;
+                    log.debug(`Private task thought: ${parsed.thought || ''}`);
+                    if (parsed.step_report)
+                        log.info(`Report: ${parsed.step_report}`);
+                    const publicUpdate = parsed.progress_update || parsed.step_report;
+                    if (publicUpdate) {
+                        this.agent.progress?.report?.(publicUpdate);
+                        this.agent.stateStore?.remember('task_progress', publicUpdate, {
+                            task_id: this.currentTaskId,
+                            step: this.currentStep
                         });
                     }
                 }
-                if (this.cancelJob) break;
-            }
 
-            step++;
-            this.currentStep = step;
-            log.info(`Step ${step}/${MAX_STEPS}`);
+                if (calls.length > 0) {
+                    noToolStreak = 0;
+                    const execution = await this._executeToolCalls(calls);
+                    if (execution.toolMessages.length === calls.length && calls.every(call => call.id))
+                        history.push(...execution.toolMessages);
+                    else
+                        history.push({ role: 'user', content: `[Tool Results]:\n${execution.text}` });
 
-            let response, toolCalls;
-            try {
-                // null response_format — conflicts with tools on many providers
-                [response, toolCalls] = await this.agent.prompter.chat_model.sendRequest(
-                    history, null, getToolDefinitions(), null
-                );
-            } catch (error) {
-                log.error(`LLM call failed at step ${step}:`, error);
-                history.push(
-                    { role: 'assistant', content: '' },
-                    { role: 'user', content: `[Error]: LLM call failed: ${error.message}. Try again.` }
-                );
-                continue;
-            }
-
-            history.push({ role: 'assistant', content: response || '' });
-
-            let parsed = this._parseResponse(response);
-            if (parsed) {
-                lastParsed = parsed;
-                if (parsed.thought) log.info(`Thought: ${parsed.thought}`);
-                if (parsed.step_report) log.info(`Report: ${parsed.step_report}`);
-            }
-
-            if (toolCalls && toolCalls.length > 0) {
-                noToolStreak = 0;
-                const results = await this._executeToolCalls(toolCalls);
-                history.push({ role: 'user', content: `[Tool Results]:\n${results}` });
-            } else {
-                noToolStreak++;
-                log.info(`No tool calls (streak: ${noToolStreak}/${MAX_NO_TOOL_STREAK})`);
-            }
-
-            if (parsed?.work_done) {
-                log.info(`Task complete in ${step} steps.`);
-                this._clearTaskStatus();
-                return {
-                    chat_response: parsed.chat_response || parsed.step_report || 'Task done.',
-                    steps: step,
-                    work_done: true
-                };
-            }
-
-            if (noToolStreak > 0 && (!toolCalls || toolCalls.length === 0)) {
-                if (noToolStreak >= MAX_NO_TOOL_STREAK) {
-                    log.warn(`${MAX_NO_TOOL_STREAK} consecutive steps with no tool calls. Aborting.`);
-                    this._clearTaskStatus();
-                    return {
-                        chat_response: 'I was unable to make progress on this task — my model could not call the required tools.',
-                        steps: step,
-                        work_done: false
-                    };
+                    if (parsed?.work_done) {
+                        history.push({
+                            role: 'user',
+                            content: '[System]: Tool calls just ran. Verify their results before declaring the task complete.'
+                        });
+                    }
+                } else {
+                    noToolStreak++;
+                    log.info(`No tool calls (streak: ${noToolStreak}/${maxNoToolStreak})`);
                 }
 
-                const nudge = noToolStreak === 1
-                    ? '[System]: No tools were called. You MUST use the function calling interface to invoke tools — do not just describe what you want to do.'
-                    : `[System]: WARNING - ${noToolStreak} consecutive steps with no tool calls. You must actually invoke tools using the function calling API, not mention them in text. If you cannot call tools, set work_done=true to end the task.`;
-                history.push({ role: 'user', content: nudge });
+                history = this._trimHistory(history);
+                this.currentHistory = history;
+                this._checkpoint(history, noToolStreak, lastParsed, startedAt);
+
+                if (parsed?.work_done && calls.length === 0) {
+                    return this._finish('completed', {
+                        chat_response: parsed.chat_response || parsed.progress_update || parsed.step_report || 'Task done.',
+                        steps: this.currentStep,
+                        work_done: true
+                    });
+                }
+
+                if (calls.length === 0) {
+                    if (noToolStreak >= maxNoToolStreak) {
+                        return this._finish('stalled', {
+                            chat_response: 'I could not make further tool-based progress. The task checkpoint was saved.',
+                            steps: this.currentStep,
+                            work_done: false
+                        });
+                    }
+                    history.push({
+                        role: 'user',
+                        content: '[System]: No tools were called. Invoke a tool for the next concrete action, or set work_done=true only if the task is verifiably complete.'
+                    });
+                }
             }
+
+            const status = this.cancelJob ? 'cancelled' : 'step_limit';
+            return this._finish(status, {
+                chat_response: this.cancelJob
+                    ? 'Task cancelled.'
+                    : `Task checkpoint saved after reaching the ${maxSteps}-step limit.`,
+                steps: this.currentStep,
+                work_done: false
+            });
+        } catch (error) {
+            log.error('Unexpected task failure:', error);
+            return this._finish('failed', {
+                chat_response: `Task failed unexpectedly: ${error.message}`,
+                steps: this.currentStep,
+                work_done: false
+            });
+        }
+    }
+
+    async _buildInitialHistory(taskDescription, systemPrompt) {
+        let taskHeader = '';
+        const headerTemplate = this.agent.prompter?.profile?.task_agent;
+        if (headerTemplate) {
+            taskHeader = await this.agent.prompter.replaceStrings(
+                headerTemplate, [{ role: 'user', content: taskDescription }]
+            );
+            taskHeader += '\n\n';
         }
 
-        this._clearTaskStatus();
-        const reason = this.cancelJob ? 'Task cancelled.' : `Task stopped (${MAX_STEPS} step limit).`;
-        this.cancelJob = false;
-        log.info(reason);
-        return {
-            chat_response: lastParsed?.chat_response || reason,
-            steps: step,
-            work_done: false
-        };
+        const memory = this.agent.stateStore?.getMemoryContext(
+            Number(settings.persistent_memory_context_events) || 12
+        ) || 'No persistent memory.';
+        const fullPrompt = `${taskHeader}${systemPrompt || ''}\n\nTask: ${taskDescription}\n\n` +
+            `[Recent persistent memory]\n${memory}\n\n${getToolDocs(this.agent)}\n\n` +
+            'Use native function calls for actions. After observations or tool results, return JSON like ' +
+            '{"thought":"private concise analysis","progress_update":"short public status","step_report":"verified result","work_done":false}. ' +
+            'Never put hidden chain-of-thought in progress_update. Include chat_response only when the bounded task is complete.';
+        return [{ role: 'system', content: fullPrompt }];
     }
 
     cancelTask() {
         this.cancelJob = true;
+        this.agent.requestInterrupt?.();
+        this._checkpoint(this.currentHistory, 0, null, null);
         log.info('Cancellation requested.');
     }
 
-    _clearTaskStatus() {
+    _checkpoint(history, noToolStreak, lastParsed, startedAt) {
+        if (!this.is_running || !this.currentTaskId)
+            return;
+        this.agent.stateStore?.saveTask({
+            id: this.currentTaskId,
+            status: 'running',
+            description: this.currentTaskDescription,
+            system_prompt: this.currentSystemPrompt,
+            source: this.currentSource,
+            step: this.currentStep,
+            no_tool_streak: noToolStreak,
+            last_parsed: clone(lastParsed),
+            history: clone(history || []),
+            started_at: startedAt || new Date().toISOString()
+        });
+    }
+
+    _trimHistory(history) {
+        const max = Number(settings.task_context_messages) || 40;
+        if (!Array.isArray(history) || history.length <= max)
+            return history;
+        const systemMessage = history.find(message => message.role === 'system');
+        const recent = history.slice(-(max - (systemMessage ? 1 : 0)));
+        while (recent[0]?.role === 'tool')
+            recent.shift();
+        return systemMessage ? [systemMessage, ...recent] : recent;
+    }
+
+    _finish(status, result) {
+        log.info(`Task ${status} after ${result.steps} steps.`);
+        this.agent.stateStore?.finishTask(status, result);
+        this.agent.stateStore?.remember('task_finish', `${status}: ${result.chat_response}`, {
+            task_id: this.currentTaskId,
+            work_done: result.work_done
+        });
         this.is_running = false;
+        this.cancelJob = false;
         this.currentTaskDescription = null;
+        this.currentSystemPrompt = '';
         this.currentStep = 0;
+        this.currentTaskId = null;
+        this.currentHistory = [];
+        return result;
     }
 
     async _executeToolCalls(toolCalls) {
         const results = [];
+        const toolMessages = [];
 
-        for (const call of toolCalls) {
+        for (const originalCall of toolCalls) {
+            const call = { ...originalCall, arguments: normalizeArguments(originalCall.arguments) };
             if (!call.name) {
                 results.push('Error: Tool call missing name');
                 continue;
             }
 
+            this.agent.progress?.tool?.(call);
+            this.agent.stateStore?.remember('tool_call', `${call.name} ${shortText(call.arguments, 250)}`, {
+                task_id: this.currentTaskId,
+                step: this.currentStep
+            });
             log.info(`Calling tool: ${call.name}`);
 
+            let output;
             try {
-                const result = await executeTool(this.agent, call.name, call.arguments || {});
-                results.push(`${call.name}: ${result || 'Success (no output)'}`);
-                log.info(`${call.name} -> ${result}`);
+                const result = await executeTool(this.agent, call.name, call.arguments);
+                output = result || 'Success (no output)';
+                log.info(`${call.name} -> ${shortText(output)}`);
             } catch (error) {
                 if (error.message.includes('not found')) {
-                    const augResult = await this._tryAugment(call);
-                    if (augResult !== null) {
-                        results.push(`${call.name}: ${augResult || 'Success (no output)'}`);
-                        continue;
-                    }
+                    const augmentResult = await this._tryAugment(call);
+                    if (augmentResult !== null)
+                        output = augmentResult || 'Success (no output)';
                 }
-                results.push(`${call.name}: Error - ${error.message}`);
-                log.error(`${call.name} failed:`, error.message);
+                if (output === undefined) {
+                    output = `Error - ${error.message}`;
+                    log.error(`${call.name} failed:`, error.message);
+                    this.agent.progress?.report?.(`${call.name} failed: ${shortText(error.message, 70)}`);
+                }
+            }
+
+            const outputText = typeof output === 'string' ? output : JSON.stringify(output);
+            results.push(`${call.name}: ${outputText}`);
+            this.agent.stateStore?.remember('tool_result', `${call.name}: ${shortText(outputText)}`, {
+                task_id: this.currentTaskId,
+                step: this.currentStep
+            });
+            if (call.id) {
+                toolMessages.push({
+                    role: 'tool',
+                    tool_call_id: call.id,
+                    content: outputText
+                });
             }
         }
 
-        return results.join('\n');
+        return { text: results.join('\n'), toolMessages };
     }
 
     async _tryAugment(call) {
         const augment = getAugment(call.name);
-        if (!augment) return null;
+        if (!augment)
+            return null;
 
         log.info(`Using augment: ${call.name}`);
         try {
             const args = call.arguments || {};
             const positionalArgs = Array.isArray(augment.parameters)
-                ? augment.parameters.map(p => args[p.name])
+                ? augment.parameters.map(parameter => args[parameter.name])
                 : [];
             return await augment.execute(this.agent, ...positionalArgs);
         } catch (error) {
@@ -211,30 +391,20 @@ export class TaskAgent {
     }
 
     _parseResponse(response) {
-        if (!response?.trim()) return null;
+        if (typeof response !== 'string' || !response.trim())
+            return null;
 
         let clean = response.trim();
-        if (clean.startsWith('```json')) clean = clean.slice(7);
-        else if (clean.startsWith('```')) clean = clean.slice(3);
-        if (clean.endsWith('```')) clean = clean.slice(0, -3);
-        clean = clean.trim();
-
-        if (clean.startsWith('{')) {
-            let depth = 0, inStr = false, esc = false;
-            for (let i = 0; i < clean.length; i++) {
-                const ch = clean[i];
-                if (esc) { esc = false; continue; }
-                if (ch === '\\') { esc = true; continue; }
-                if (ch === '"') { inStr = !inStr; continue; }
-                if (inStr) continue;
-                if (ch === '{') depth++;
-                else if (ch === '}' && --depth === 0) {
-                    clean = clean.slice(0, i + 1);
-                    break;
-                }
-            }
-        }
-
+        if (clean.startsWith('```json'))
+            clean = clean.slice(7);
+        else if (clean.startsWith('```'))
+            clean = clean.slice(3);
+        if (clean.endsWith('```'))
+            clean = clean.slice(0, -3);
+        const start = clean.indexOf('{');
+        const end = clean.lastIndexOf('}');
+        if (start >= 0 && end > start)
+            clean = clean.slice(start, end + 1);
         try {
             return JSON.parse(clean);
         } catch {

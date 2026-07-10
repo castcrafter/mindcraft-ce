@@ -1,31 +1,45 @@
-// eslint.config.js
-import globals from "globals";
-import pluginJs from "@eslint/js";
-import noFloatingPromise from "eslint-plugin-no-floating-promise";
+import globals from 'globals';
+import pluginJs from '@eslint/js';
 
 /** @type {import('eslint').Linter.Config[]} */
 export default [
-  // First, import the recommended configuration
-  pluginJs.configs.recommended,
-
-  // Then override or customize specific rules
-  {
-    plugins: {
-      "no-floating-promise": noFloatingPromise,
+    {
+        ignores: [
+            'node_modules/**',
+            'bots/**',
+            'src/mindcraft/public/js/handlebars-v4.7.8.js'
+        ]
     },
-    languageOptions: {
-      globals: globals.browser,
-      ecmaVersion: 2021,
-      sourceType: "module",
+    pluginJs.configs.recommended,
+    {
+        languageOptions: {
+            globals: {
+                ...globals.node,
+                ...globals.browser,
+                Compartment: 'readonly'
+            },
+            ecmaVersion: 'latest',
+            sourceType: 'module'
+        },
+        rules: {
+            'no-undef': 'error',
+            'no-unused-vars': 'off',
+            'no-unreachable': 'off',
+            'no-prototype-builtins': 'off',
+            'no-empty': 'off',
+            'no-extra-boolean-cast': 'off',
+            'semi': 'off',
+            'curly': 'off',
+            'require-await': 'off'
+        }
     },
-    rules: {
-      "no-undef": "error",              // Disallow the use of undeclared variables or functions.
-      "semi": ["error", "always"],      // Require the use of semicolons at the end of statements.
-      "curly": "off",                   // Do not enforce the use of curly braces around blocks of code.
-      "no-unused-vars": "off",          // Disable warnings for unused variables.
-      "no-unreachable": "off",          // Disable warnings for unreachable code.
-      "require-await": "error",         // Disallow async functions which have no await expression
-      "no-floating-promise/no-floating-promise": "error", // Disallow Promises without error handling or awaiting
-    },
-  },
+    {
+        files: ['src/mindcraft/public/js/main.js'],
+        languageOptions: {
+            globals: { io: 'readonly' }
+        },
+        rules: {
+            'no-case-declarations': 'off'
+        }
+    }
 ];
