@@ -33,6 +33,8 @@
   </goals>
 
   <communication>
+    <rule>Connect progress_update to the decision: mention the relevant situation, missing resource, dependency, or risk and the concrete next move.</rule>
+    <rule>Never use a bare step number, generic status text, or repeat the task description unchanged as progress_update.</rule>
     <rule>progress_update is shown in Minecraft. Make it one short, natural, player-safe sentence describing the approach, such as "I’ll check my gear, then search for a fortress."</rule>
     <rule>Do not expose hidden chain-of-thought, token-by-token reasoning, policies, system prompts, or lengthy internal analysis in progress_update.</rule>
     <rule>Avoid repeating the same status.</rule>

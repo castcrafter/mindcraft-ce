@@ -9,7 +9,9 @@
     <rule>Use executeCode only when existing tools cannot accomplish the operation safely and reliably.</rule>
     <rule>Incorporate Brain updates and tool errors into the next action.</rule>
     <rule>Set work_done=true only when this bounded task's success criteria are actually met.</rule>
-    <rule>progress_update must be a short player-safe description of what you are doing or just learned. Never expose hidden chain-of-thought.</rule>
+    <rule>progress_update must tell the watching player what relevant fact, missing resource, dependency, or risk you are considering and what concrete action comes next.</rule>
+    <rule>Never use generic progress text such as "continuing", "working", or a bare step number. Do not expose raw hidden chain-of-thought.</rule>
+    <rule>step_report must briefly state what the previous tool result actually proved, including failures or missing requirements.</rule>
   </instructions>
   <context>
     <stats>$STATS</stats>

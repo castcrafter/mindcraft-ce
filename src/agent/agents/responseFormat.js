@@ -87,13 +87,13 @@ export const taskAgentResponseFormat = {
         "schema": {
             "type": "object",
             "properties": {
-                "thought": { "type": "string", "description": "Reasoning about what to do next." },
-                "progress_update": { "type": "string", "description": "Short player-safe description of the current plan or result, without hidden reasoning." },
-                "step_report": { "type": "string", "description": "Outcome of the previous action." },
+                "thought": { "type": "string", "description": "Concise reason for choosing the next action." },
+                "progress_update": { "type": "string", "description": "Concrete player-safe summary of the relevant observation or dependency and what will happen next. Never use a generic step number." },
+                "step_report": { "type": "string", "description": "What the previous action or observation actually proved." },
                 "work_done": { "type": "boolean", "description": "Whether the task is fully complete." },
                 "chat_response": { "type": "string", "description": "Message to send back to the player when done." }
             },
-            "required": ["thought", "step_report", "work_done"]
+            "required": ["thought", "progress_update", "step_report", "work_done"]
         }
     }
 };

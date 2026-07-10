@@ -43,8 +43,10 @@ Autonomy stops automatically after `autonomy_max_consecutive_failures` failed su
 The progress channel is enabled by default and deliberately does not expose hidden chain-of-thought. It shows:
 
 - a short model-generated, player-safe plan summary;
+- a concise `Thinking -> Next -> Result` summary after each model decision;
 - the current task and recovery point;
 - human-readable tool actions such as wiki search, crafting, travelling, placing, or fighting;
+- short tool results where they help explain the following decision;
 - occasional generic planning phases while a slow model request is running;
 - failures and pause/recovery events.
 
@@ -55,11 +57,23 @@ Messages are deduplicated and rate-limited. Relevant settings are:
   "progress_chat": true,
   "progress_chat_show_tools": true,
   "progress_chat_show_plans": true,
+  "progress_chat_show_reasoning": true,
   "progress_chat_min_interval_ms": 2500,
   "progress_chat_interval_ms": 12000,
-  "progress_chat_max_length": 120
+  "progress_chat_max_length": 200
 }
 ```
+
+The chat summary uses structured, player-safe fields produced by BrainAgent and TaskAgent. It never streams raw provider chain-of-thought. For local debugging, raw provider reasoning can be written to the console explicitly:
+
+```json
+{
+  "log_model_reasoning": true,
+  "log_model_reasoning_max_chars": 12000
+}
+```
+
+Raw reasoning can be long and may repeat prompts, player messages, or tool context, so it is disabled by default.
 
 Native function calling is the preferred execution path. If a model nevertheless emits an old inline command such as `!nearbyBlocks()` or `!nearby-blocks`, the TaskAgent recognizes known tool names and aliases, converts them to an internal tool call, executes the tool, and feeds the result back into the task loop. Unknown text commands are never executed.
 

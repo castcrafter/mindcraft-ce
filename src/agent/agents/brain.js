@@ -11,6 +11,13 @@ function shortText(value, maxLength = 500) {
     return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
 }
 
+function reasoningForLog(value) {
+    const text = String(value ?? '').trim();
+    const configured = Number(settings.log_model_reasoning_max_chars);
+    const maxLength = Number.isFinite(configured) && configured > 0 ? configured : 12000;
+    return text.length > maxLength ? `${text.slice(0, maxLength)}\n...[reasoning truncated]` : text;
+}
+
 export class BrainAgent {
     constructor(agent, messageQueue) {
         this.agent = agent;
@@ -52,8 +59,9 @@ export class BrainAgent {
             this._appendUserMessage(source, message);
 
             let response;
+            let modelMetadata;
             try {
-                [response] = await this.agent.prompter.handleRequest(
+                [response, , modelMetadata] = await this.agent.prompter.handleRequest(
                     'brain', this.message_history, [], brainAgentResponseFormat
                 );
             } catch (error) {
@@ -72,6 +80,9 @@ export class BrainAgent {
 
             log.info(`Route: ${parsed.route}`);
             log.debug(`Private model analysis: ${parsed.thoughts || ''}`);
+            const providerReasoning = modelMetadata?.assistant_message?.reasoning_content;
+            if (settings.log_model_reasoning && providerReasoning)
+                log.info(`Provider reasoning:\n${reasoningForLog(providerReasoning)}`);
 
             const goalActions = Array.isArray(parsed.goal_action)
                 ? parsed.goal_action
@@ -80,8 +91,12 @@ export class BrainAgent {
                 this._handleGoalAction(goalAction);
 
             const publicUpdate = shortText(parsed.progress_update || parsed.task_description, 110);
-            if (publicUpdate)
-                this.agent.progress?.plan?.(publicUpdate);
+            if (publicUpdate) {
+                if (this.agent.progress?.decision)
+                    this.agent.progress.decision({ progress_update: publicUpdate });
+                else
+                    this.agent.progress?.plan?.(publicUpdate);
+            }
 
             this.agent.stateStore?.remember(
                 'decision',

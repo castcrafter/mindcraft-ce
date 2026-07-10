@@ -17,6 +17,9 @@ const TOOL_LABELS = {
     goToRememberedPlace: 'Going to saved place',
     goToSurface: 'Returning to the surface',
     nearbyBlocks: 'Checking nearby blocks',
+    inventory: 'Checking inventory',
+    stats: 'Checking health and status',
+    entities: 'Checking nearby entities',
     placeBlockAt: 'Placing a block',
     placeHere: 'Placing a block',
     searchForBlock: 'Searching for blocks',
@@ -42,6 +45,16 @@ function shortText(value, maxLength = 110) {
     return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
 }
 
+function sameMeaning(left, right) {
+    const normalize = value => String(value ?? '')
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .trim();
+    const a = normalize(left);
+    const b = normalize(right);
+    return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
+}
+
 function toolSubject(args = {}) {
     if (!args || typeof args !== 'object')
         return '';
@@ -55,12 +68,39 @@ export function formatToolProgress(call) {
     return `${TOOL_LABELS[name] || `Using ${name}`}${toolSubject(call?.arguments)}`;
 }
 
+export function formatDecisionProgress(decision, { showReasoning = true, maxLength = 200 } = {}) {
+    const thought = shortText(decision?.thought ?? decision?.thoughts, 90);
+    const next = shortText(decision?.progress_update, 90);
+    const result = shortText(decision?.step_report, 70);
+    const parts = [];
+
+    if (showReasoning && thought)
+        parts.push(`Thinking: ${thought}`);
+    if (next && !sameMeaning(next, thought))
+        parts.push(`Next: ${next}`);
+    if (result && !sameMeaning(result, thought) && !sameMeaning(result, next))
+        parts.push(`Result: ${result}`);
+
+    return shortText(parts.join(' | '), maxLength);
+}
+
+export function formatToolResult(call, output, maxLength = 105) {
+    const name = call?.name || 'tool';
+    const label = TOOL_LABELS[name] || name;
+    const result = shortText(output, maxLength);
+    return result ? `${label} -> ${result}` : '';
+}
+
 export class ProgressReporter {
     constructor(agent, overrides = {}) {
         this.agent = agent;
         this.enabled = asBoolean(overrides.enabled ?? settings.progress_chat, true);
         this.showTools = asBoolean(overrides.showTools ?? settings.progress_chat_show_tools, true);
         this.showPlans = asBoolean(overrides.showPlans ?? settings.progress_chat_show_plans, true);
+        this.showReasoning = asBoolean(
+            overrides.showReasoning ?? settings.progress_chat_show_reasoning,
+            true
+        );
         this.minIntervalMs = Number(overrides.minIntervalMs ?? settings.progress_chat_min_interval_ms) || 2500;
         this.thinkingIntervalMs = Number(overrides.thinkingIntervalMs ?? settings.progress_chat_interval_ms) || 12000;
         this.maxLength = Number(overrides.maxLength ?? settings.progress_chat_max_length) || 120;
@@ -105,7 +145,18 @@ export class ProgressReporter {
 
     plan(message) {
         if (this.showPlans)
-            this.report(`Plan: ${message}`);
+            this.report(`Plan: ${message}`, { force: true });
+    }
+
+    decision(value) {
+        if (!this.showPlans)
+            return;
+        const message = formatDecisionProgress(value, {
+            showReasoning: this.showReasoning,
+            maxLength: this.maxLength
+        });
+        if (message)
+            this.report(message, { force: true });
     }
 
     tool(call) {
@@ -113,15 +164,30 @@ export class ProgressReporter {
             this.report(formatToolProgress(call));
     }
 
-    startThinking(topic = 'the next move') {
+    toolResult(call, output) {
+        if (!this.showTools)
+            return;
+        const message = formatToolResult(call, output, Math.max(40, this.maxLength - 20));
+        if (message)
+            this.report(message);
+    }
+
+    startThinking(context = 'the next move') {
         if (!this.enabled)
             return () => {};
-        const subject = shortText(topic, 75);
-        const phases = [
-            `Planning: ${subject}`,
-            'Checking risks and required resources',
-            'Choosing the next safe action'
-        ];
+        const task = typeof context === 'object' ? context.task : context;
+        const lastUpdate = typeof context === 'object' ? context.lastUpdate : '';
+        const phases = lastUpdate
+            ? [
+                `Reviewing: ${shortText(lastUpdate, 85)}`,
+                'Checking inventory, surroundings, dependencies and risks',
+                'Working out the next concrete action'
+            ]
+            : [
+                `Assessing: ${shortText(task || 'the next move', 85)}`,
+                'Checking inventory, surroundings, dependencies and risks',
+                'Working out the first concrete action'
+            ];
         let phase = 0;
         this.report(phases[phase]);
         const timer = setInterval(() => {

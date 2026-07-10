@@ -25,6 +25,13 @@ function shortText(value, maxLength = 500) {
     return cleaned.length > maxLength ? `${cleaned.slice(0, maxLength - 3)}...` : cleaned;
 }
 
+function reasoningForLog(value) {
+    const text = String(value ?? '').trim();
+    const configured = Number(settings.log_model_reasoning_max_chars);
+    const maxLength = Number.isFinite(configured) && configured > 0 ? configured : 12000;
+    return text.length > maxLength ? `${text.slice(0, maxLength)}\n...[reasoning truncated]` : text;
+}
+
 function normalizeArguments(args) {
     if (!args)
         return {};
@@ -124,9 +131,10 @@ export class TaskAgent {
                 let response;
                 let toolCalls;
                 let modelMetadata;
-                const stopThinking = this.agent.progress?.startThinking?.(
-                    `${this.currentTaskDescription} (step ${this.currentStep})`
-                ) || (() => {});
+                const stopThinking = this.agent.progress?.startThinking?.({
+                    task: this.currentTaskDescription,
+                    lastUpdate: lastParsed?.progress_update || lastParsed?.step_report || lastParsed?.thought || ''
+                }) || (() => {});
                 try {
                     [response, toolCalls, modelMetadata] = await this.agent.prompter.chat_model.sendRequest(
                         history, null, getToolDefinitions(this.agent), null
@@ -173,6 +181,9 @@ export class TaskAgent {
                     }
                 }
                 const assistantMessage = modelMetadata?.assistant_message;
+                const providerReasoning = assistantMessage?.reasoning_content;
+                if (settings.log_model_reasoning && providerReasoning)
+                    log.info(`Provider reasoning:\n${reasoningForLog(providerReasoning)}`);
                 history.push(assistantMessage
                     ? clone(assistantMessage)
                     : { role: 'assistant', content: response || '' });
@@ -182,9 +193,9 @@ export class TaskAgent {
                     log.debug(`Private task thought: ${parsed.thought || ''}`);
                     if (parsed.step_report)
                         log.info(`Report: ${parsed.step_report}`);
-                    const publicUpdate = parsed.progress_update || parsed.step_report;
+                    this.agent.progress?.decision?.(parsed);
+                    const publicUpdate = parsed.progress_update || parsed.step_report || parsed.thought;
                     if (publicUpdate) {
-                        this.agent.progress?.report?.(publicUpdate);
                         this.agent.stateStore?.remember('task_progress', publicUpdate, {
                             task_id: this.currentTaskId,
                             step: this.currentStep
@@ -272,8 +283,10 @@ export class TaskAgent {
         const fullPrompt = `${taskHeader}${systemPrompt || ''}\n\nTask: ${taskDescription}\n\n` +
             `[Recent persistent memory]\n${memory}\n\n${getToolDocs(this.agent)}\n\n` +
             'Use native function calls for actions. After observations or tool results, return JSON like ' +
-            '{"thought":"private concise analysis","progress_update":"short public status","step_report":"verified result","work_done":false}. ' +
-            'Never put hidden chain-of-thought in progress_update. Include chat_response only when the bounded task is complete.';
+            '{"thought":"concise reason for the choice","progress_update":"what I will do next and why","step_report":"what the previous action proved","work_done":false}. ' +
+            'Make progress_update concrete and useful to a watching player: mention the relevant observation, missing resource, risk, or dependency and the next action. ' +
+            'Do not use generic text like "continuing the task" and never put raw hidden chain-of-thought in progress_update. ' +
+            'Include chat_response only when the bounded task is complete.';
         return [{ role: 'system', content: fullPrompt }];
     }
 
@@ -366,6 +379,7 @@ export class TaskAgent {
             }
 
             const outputText = typeof output === 'string' ? output : JSON.stringify(output);
+            this.agent.progress?.toolResult?.(call, outputText);
             results.push(`${call.name}: ${outputText}`);
             this.agent.stateStore?.remember('tool_result', `${call.name}: ${shortText(outputText)}`, {
                 task_id: this.currentTaskId,

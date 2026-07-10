@@ -182,6 +182,11 @@
         "description": "Show model-generated player-safe plan summaries.",
         "default": true
     },
+    "progress_chat_show_reasoning": {
+        "type": "boolean",
+        "description": "Show concise structured reasoning summaries in Minecraft chat. Raw provider reasoning is never sent to chat.",
+        "default": true
+    },
     "progress_chat_min_interval_ms": {
         "type": "number",
         "description": "Minimum time between progress chat messages.",
@@ -190,6 +195,21 @@
     "progress_chat_interval_ms": {
         "type": "number",
         "description": "Interval for a status update while a model request is still running.",
+        "default": 12000
+    },
+    "progress_chat_max_length": {
+        "type": "number",
+        "description": "Maximum length of one Minecraft progress message.",
+        "default": 200
+    },
+    "log_model_reasoning": {
+        "type": "boolean",
+        "description": "Log raw model-provider reasoning to the server console. This can be verbose and may include sensitive context.",
+        "default": false
+    },
+    "log_model_reasoning_max_chars": {
+        "type": "number",
+        "description": "Maximum provider-reasoning characters logged per model response.",
         "default": 12000
     },
     "code_timeout_mins": {

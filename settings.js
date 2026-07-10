@@ -63,9 +63,10 @@ const settings = {
     "progress_chat": true,
     "progress_chat_show_tools": true,
     "progress_chat_show_plans": true,
+    "progress_chat_show_reasoning": true, // show concise structured reasoning summaries, never raw provider reasoning
     "progress_chat_min_interval_ms": 2500,
     "progress_chat_interval_ms": 12000,
-    "progress_chat_max_length": 120,
+    "progress_chat_max_length": 200,
     "progress_chat_prefix": "› ",
     "blocked_actions" : ["checkBlueprint", "checkBlueprintLevel", "getBlueprint", "getBlueprintLevel"] , // commands to disable and remove from docs. Ex: ["!setMode"]
     "code_timeout_mins": -1, // minutes code is allowed to run. -1 for no timeout
@@ -83,6 +84,8 @@ const settings = {
   
     "log_level": "info", // DEBUG, INFO, WARN, ERROR, NONE
     "log_module_levels": {}, // per-module overrides, e.g. {"BrainAgent": "debug"}
+    "log_model_reasoning": false, // log raw provider reasoning; can be very verbose and may contain sensitive context
+    "log_model_reasoning_max_chars": 12000,
 
     "log_all_prompts": false, // log ALL prompts to file
 

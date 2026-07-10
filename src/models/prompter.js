@@ -265,14 +265,14 @@ export class Prompter {
         if (!messages)
             messages = [];
 
-        let generation, function_calls;
+        let generation, function_calls, model_metadata;
         try {
-            [generation, function_calls] = await this.chat_model.sendRequest(
+            [generation, function_calls, model_metadata] = await this.chat_model.sendRequest(
                 messages, systemPrompt, tools, response_format
             );
         } catch (error) {
             log.error('Generation failed:', error);
-            return [undefined, []];
+            return [undefined, [], undefined];
         }
 
         if (generation?.includes('</think>'))
@@ -285,7 +285,7 @@ export class Prompter {
                 function_calls = parseToolCalls(result.chat_response);
         } catch (e) { /* not JSON */ }
 
-        return [generation, function_calls];
+        return [generation, function_calls, model_metadata];
     }
 
 
